@@ -22,6 +22,10 @@
 	<string>1</string>
 	<key>NSPrincipalClass</key>
 	<string>NTMPrincipalController</string>
+	<key>CFBundleIconFiles</key>
+	<array>
+		<string>NotifyManager@2x</string>
+	</array>
 	<key>MinimumOSVersion</key>
 	<string>14.0</string>
 </dict>

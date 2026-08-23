@@ -119,21 +119,35 @@ static void NTM_apply(NSString *appId) {
     } @catch (NSException *e) {}
 }
 
-#pragma mark - 枚举应用 (正确分类)
+#pragma mark - 枚举应用 (参照 TrollFools 分类: User/System + com.apple 前缀 + teamID)
 static NSString *NTM_catOfProxy(id proxy) {
-    // applicationType -> "System"/"User"; signerIdentity -> Apple/AppStore vs adhoc
     NSString *type  = NTM_msg0(proxy, "applicationType") ?: @"";
-    NSString *signer = NTM_msg0(proxy, "signerIdentity") ?: @"";
-    NSURL *url      = NTM_msg0(proxy, "bundleURL");
-    NSString *path  = [(NSURL *)url path] ?: @"";
-    BOOL adhoc = (signer.length && ([signer containsString:@"adhoc"] || [signer containsString:@"AdHoc"] || [signer containsString:@"app-signed"] || [signer containsString:@"App"]) == NO);
-    if ([type isEqualToString:@"System"]) return @"系统应用";
-    if ([path containsString:@"/private/var/containers/Bundle/Application/"]) {
-        // App Store 应用 signer 含 "Apple"; TrollStore/巨魔 是 adhoc
-        BOOL isApple = ([signer containsString:@"Apple"] || [signer containsString:@"App Store"] || [signer containsString:@"iPhone Developer"]);
-        return isApple ? @"用户应用" : @"巨魔应用";
+    NSString *bid   = NTM_msg0(proxy, "applicationIdentifier") ?: @"";
+    if ([type isEqualToString:@"System"]) {
+        return ([bid hasPrefix:@"com.apple."]) ? @"系统应用" : @"巨魔应用";
     }
-    return @"用户应用";
+    // type == "User" : App Store 用户应用 or TrollStore 装的用户应用
+    // 区分靠 teamID: App Store 签名 teamID= 苹果 ID; adhoc/TrollStore 通常 nil 或非苹果
+    NSString *teamID = NTM_msg0(proxy, "teamID") ?: @"";
+    BOOL fromAppleSigning = NO;
+    if (teamID.length && ![teamID isEqualToString:@"adhoc"] && ![teamID isEqualToString:@"AdHoc"])
+        fromAppleSigning = YES;
+    return fromAppleSigning ? @"用户应用" : @"巨魔应用";
+}
+
+// 通过私有 API 取应用图标 (TrollFools 验证可行)
+static UIImage *NTM_iconFor(NSString *bid) {
+    if (!bid.length) return nil;
+    @try {
+        Class UI = UIImage.class;
+        id (*f)(id, SEL, id, long long, double)
+           = (id (*)(id, SEL, id, long long, double))objc_msgSend;
+        id icon = f((id)UI,
+                    sel_registerName("_applicationIconImageForBundleIdentifier:format:scale:"),
+                    bid, 0, 2.0);
+        if (icon && [icon isKindOfClass:UIImage.class]) return (UIImage *)icon;
+    } @catch (NSException *e) {}
+    return nil;
 }
 
 static NSArray *NTM_allApps(void) {
@@ -149,17 +163,15 @@ static NSArray *NTM_allApps(void) {
         NSString *name = NTM_msg0(proxy, "localizedName");
         NSString *path = [(NSURL *)url path] ?: @"";
         if (!bid.length || !path.length) continue;
-        NSData *iconData = nil;
-        @try {
-            id idata = ((id (*)(id, SEL, long long))objc_msgSend)(proxy, sel_registerName("iconDataForVariant:"), 0);
-            if (idata) iconData = idata;
-        } @catch (NSException *e) {}
+        NSString *cat = NTM_catOfProxy(proxy);
+        // 跳过系统级 /usr/bin 类无用项
+        if ([cat isEqualToString:@"系统应用"] &&
+            ([path hasPrefix:@"/System/Library/"] && ![bid hasPrefix:@"com.apple"])) continue;
         [out addObject:@{ @"id":bid, @"name":(name.length? name: bid), @"path":path,
-                          @"cat":NTM_catOfProxy(proxy),
-                          @"icon":(iconData? iconData:[NSNull null]) }];
+                          @"cat":cat, @"icon":(NTM_iconFor(bid) ?: [NSNull null]) }];
     }
+    NSArray *order = @[ @"用户应用", @"巨魔应用", @"系统应用" ];
     [out sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b){
-        NSArray *order = @[ @"用户应用", @"巨魔应用", @"系统应用" ];
         NSInteger ia = [order indexOfObject:a[@"cat"]];
         NSInteger ib = [order indexOfObject:b[@"cat"]];
         if (ia != ib) return ia < ib ? NSOrderedAscending : NSOrderedDescending;
@@ -196,6 +208,19 @@ static id NTM_group(NSString *title) {
     Class PS = NTM_class("PSSpecifier");
     if (!PS) return nil;
     return ((id (*)(id, SEL, id))objc_msgSend)((id)PS, sel_registerName("groupSpecifierWithName:"), title);
+}
+
+// 每个 App 一行标题(带图标), 仅展示无交互
+static id NTM_newAppHeader(NSString *title, UIImage *icon) {
+    Class PS = NTM_class("PSSpecifier");
+    if (!PS) return nil;
+    id spec = ((id (*)(id, SEL, id, id, SEL, SEL, id, long long, id))objc_msgSend)(
+        (id)PS, sel_registerName("preferenceSpecifierNamed:target:set:get:detail:cell:edit:"),
+        title, nil, NULL, NULL, nil, (long long)CT_GROUP, 0);
+    if (!spec) return nil;
+    if (icon && [spec respondsToSelector:sel_registerName("setProperty:forKey:")])
+        ((void (*)(id, SEL, id, id))objc_msgSend)(spec, sel_registerName("setProperty:forKey:"), icon, @"iconImage");
+    return spec;
 }
 
 // 当前分类 (分段控件状态)
@@ -279,8 +304,8 @@ static NSDictionary *NTM_lastApps = nil; // 缓存一次
         }
         shown++;
         NSString *aid = app[@"id"];
-        // App 标题(带图标): 用 group cell 标题 + cellType? 更好用 iconImage 的 PSLinkCell
-        id hdr = NTM_group(app[@"name"]);
+        // App 标题(带图标)
+        id hdr = NTM_newAppHeader(app[@"name"], app[@"icon"] != [NSNull null] ? app[@"icon"] : nil);
         if (hdr) [arr addObject:hdr];
         NSArray *dims = @[ @[@"锁屏通知", @"lock"], @[@"通知中心", @"nc"], @[@"横幅", @"banner"] ];
         for (NSArray *pair in dims) {

@@ -8,7 +8,9 @@
 
 #pragma mark - 运行时接口声明(占位, 仅让编译器认识父类)
 
-@interface PSListController : UIViewController
+@interface PSListController : UIViewController {
+    NSArray *_specifiers;
+}
 - (id)specifiers;
 - (void)reloadSpecifiers;
 - (id)specifier;

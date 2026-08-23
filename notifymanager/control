@@ -1,0 +1,9 @@
+Package: com.ntm.notifymanager
+Name: 通知管理
+Version: 1.0.4
+Architecture: iphoneos-arm64
+Maintainer: yzdmm2024
+Author: yzdmm2024
+Section: Tweaks
+Description: 按分类(用户/系统)管理每个App的通知：总开关+锁屏/通知中心/横幅子开关
+Depends: mobilesubstrate, preferenceloader

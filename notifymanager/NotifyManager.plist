@@ -4,16 +4,18 @@
 <dict>
 	<key>entry</key>
 	<dict>
-		<key>bundle</key>
-		<string>NotifyManager</string>
-		<key>cell</key>
-		<string>PSLinkCell</string>
-		<key>detail</key>
-		<string>NTMPrincipalController</string>
-		<key>isController</key>
-		<true/>
-		<key>label</key>
-		<string>通知管理</string>
-	</dict>
+			<key>bundle</key>
+			<string>NotifyManager</string>
+			<key>cell</key>
+			<string>PSLinkCell</string>
+			<key>detail</key>
+			<string>NTMPrincipalController</string>
+			<key>isController</key>
+			<true/>
+			<key>icon</key>
+			<string>NotifyManager.bundle/NotifyManager@2x.png</string>
+			<key>label</key>
+			<string>通知管理</string>
+		</dict>
 </dict>
 </plist>

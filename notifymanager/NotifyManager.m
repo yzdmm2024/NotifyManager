@@ -185,7 +185,7 @@ static id NTM_newSwitch(NSString *title, id target, NSString *appId, NSString *d
 }
 
 static id NTM_newButton(id target, NSString *title, SEL action) {
-    id spec = NTM_BUILD(title, target, 0, 0, CT_BUTTON);
+    id spec = NTM_BUILD(title, target, NULL, NULL, CT_BUTTON);
     if (!spec) return nil;
     if ([spec respondsToSelector:sel_registerName("setButtonAction:")])
         ((void (*)(id, SEL, SEL))objc_msgSend)(spec, sel_registerName("setButtonAction:"), action);
@@ -251,13 +251,8 @@ static NSDictionary *NTM_lastApps = nil; // 缓存一次
 
     // 分类分段控件
     {
-        Class PS = NTM_class("PSSpecifier");
-        id spec = ((msg2fn)objc_msgSend)(
-            (id)PS, sel_registerName("preferenceSpecifierNamed:target:set:get:detail:cell:edit:"),
-            @"分类", self,
-            [NSValue valueWithPointer:@selector(setCat:specifier:)],
-            [NSValue valueWithPointer:@selector(getCat:)],
-            nil, [NSNumber numberWithLongLong:CT_SEGMENT], nil);
+        id spec = NTM_BUILD(@"分类", self,
+                            @selector(setCat:specifier:), @selector(getCat:), CT_SEGMENT);
         if (spec) {
             NTM_setProp(spec, @"validValues", @[ @(0), @(1), @(2) ]);
             NTM_setProp(spec, @"validTitles", @[ @"用户应用", @"巨魔应用", @"系统应用" ]);

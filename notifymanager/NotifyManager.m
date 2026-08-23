@@ -1,5 +1,6 @@
 // NotifyManager —— rootless PreferenceBundle
-// 三大分类页(用户/巨魔/系统) + 每 app: 总开关 + 锁屏/通知中心/横幅 3 子开关
+// 单一滚动面板：顶部一键全开/全关，三段(用户应用/巨魔应用/系统应用)，
+// 每个 App 总开关 + 锁屏/通知中心/横幅 3 个子开关。
 // 全部动态 objc_msgSend，避免私有头 + ARC performSelector 问题。
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -18,39 +19,32 @@
 @interface PSSpecifier : NSObject
 - (void)setProperty:(id)prop forKey:(NSString *)key;
 - (id)propertyForKey:(NSString *)key;
-@end
-@interface NTMAppsListController : PSListController
-- (void)doSet:(NSNumber *)value spec:(PSSpecifier *)spec;
+- (void)setTarget:(id)target;
+- (void)setButtonAction:(SEL)action;
 @end
 @interface NTMPrincipalController : PSListController @end
 
 // standard cell 类型常量(同 Preferences.framework PSSpecifier.h)
 static const long long NTM_SWITCH_CELL = 4;   // PSSwitchCell
-static const long long NTM_LINKLIST    = 3;   // PSLinkListCell
+static const long long NTM_LINK_LIST   = 3;   // PSLinkListCell(可执行 button action)
 
 #pragma mark - 动态消息工具
 
 static id NTM_msg0(id target, const char *sel) {
     return ((id (*)(id, SEL))objc_msgSend)(target, sel_registerName(sel));
 }
-static id NTM_msg1(id target, const char *sel, id a1) {
-    return ((id (*)(id, SEL, id))objc_msgSend)(target, sel_registerName(sel), a1);
-}
-static id NTM_msg1s(id target, const char *sel, const char *a1) {
-    return ((id (*)(id, SEL, const char *))objc_msgSend)(target, sel_registerName(sel), a1);
-}
-static id NTM_msg2(id target, const char *sel, id a1, id a2) {
-    return ((id (*)(id, SEL, id, id))objc_msgSend)(target, sel_registerName(sel), a1, a2);
+static void NTM_msg1v(id target, const char *sel, id a1) {
+    ((void (*)(id, SEL, id))objc_msgSend)(target, sel_registerName(sel), a1);
 }
 static void NTM_setProp(id spec, NSString *key, id val) {
-    void (*f)(id, SEL, id, id) = (void (*)(id, SEL, id, id))objc_msgSend;
-    f(spec, sel_registerName("setProperty:forKey:"), val, key);
+    ((void (*)(id, SEL, id, id))objc_msgSend)(spec, sel_registerName("setProperty:forKey:"), val, key);
 }
 static id NTM_getProp(id spec, NSString *key) {
     return ((id (*)(id, SEL, id))objc_msgSend)(spec, sel_registerName("propertyForKey:"), key);
 }
-
 static Class NTM_class(const char *name) { return objc_getClass(name); }
+
+#pragma mark - 本地设置存取
 
 static NSString *NTM_key(NSString *appId, NSString *dim) {
     return [NSString stringWithFormat:@"NTM_%@_%@", dim, appId];
@@ -134,9 +128,7 @@ static id NTM_newSwitch(id target, NSString *title, NSString *appId, NSString *d
     Class PS = NTM_class("PSSpecifier");
     if (!PS) return nil;
     // +preferenceSpecifierNamed:target:set:get:detail:cell:edit:
-    void (*pref)(id, SEL, id, id, SEL, SEL, id, long long, id) =
-        (void (*)(id, SEL, id, id, SEL, SEL, id, long long, id))objc_msgSend;
-    id spec = ((id (*)(id, SEL, id, id, SEL, SEL, id, long long, id))pref)(
+    id spec = ((id (*)(id, SEL, id, id, SEL, SEL, id, long long, id))objc_msgSend)(
         (id)PS, sel_registerName("preferenceSpecifierNamed:target:set:get:detail:cell:edit:"),
         title, target, sSel, gSel, nil, NTM_SWITCH_CELL, nil);
     if (!spec) return nil;
@@ -145,93 +137,97 @@ static id NTM_newSwitch(id target, NSString *title, NSString *appId, NSString *d
     return spec;
 }
 
-static id NTM_newLink(id target, NSString *title, NSString *cat) {
+// 可点击按钮行(一键全开 / 一键全关) —— 用 PSListController 标准的 target/action 机制
+static id NTM_newButton(id target, NSString *title, SEL action, NSString *appId) {
     Class PS = NTM_class("PSSpecifier");
     if (!PS) return nil;
-    void (*pref)(id, SEL, id, id, SEL, SEL, id, long long, id) =
-        (void (*)(id, SEL, id, id, SEL, SEL, id, long long, id))objc_msgSend;
-    id spec = ((id (*)(id, SEL, id, id, SEL, SEL, id, long long, id))pref)(
+    id spec = ((id (*)(id, SEL, id, id, SEL, SEL, id, long long, id))objc_msgSend)(
         (id)PS, sel_registerName("preferenceSpecifierNamed:target:set:get:detail:cell:edit:"),
-        title, target, NULL, @selector(getLinks:),
-        NTM_class("NTMAppsListController"), NTM_LINKLIST, nil);
-    if (spec) NTM_setProp(spec, @"cat", cat);
+        title, target, NULL, NULL, nil, NTM_LINK_LIST, nil);
+    if (!spec) return nil;
+    // setTarget:/setAction: 是 PSSpecifier + PSListController 的标准按钮机制
+    SEL tS = sel_registerName("setTarget:");
+    SEL aS = sel_registerName("setAction:");
+    if ([spec respondsToSelector:tS])
+        ((void (*)(id, SEL, id))objc_msgSend)(spec, tS, target);
+    if ([spec respondsToSelector:aS])
+        ((void (*)(id, SEL, SEL))objc_msgSend)(spec, aS, action);
+    if (appId) NTM_setProp(spec, @"appId", appId);
     return spec;
 }
 
 static id NTM_group(NSString *title) {
     Class PS = NTM_class("PSSpecifier");
     if (!PS) return nil;
-    void (*g)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
-    return ((id (*)(id, SEL, id))g)((id)PS, sel_registerName("groupSpecifierWithName:"), title);
+    return ((id (*)(id, SEL, id))objc_msgSend)(
+        (id)PS, sel_registerName("groupSpecifierWithName:"), title);
 }
 
-#pragma mark - Apps 分类页
-
-@implementation NTMAppsListController
-
-- (NSString *)catOfSelf {
-    id spec = [self specifier];
-    if (spec) {
-        id c = NTM_getProp(spec, @"cat");
-        if ([c isKindOfClass:[NSString class]]) return c;
-    }
-    return @"用户应用";
-}
-
-- (NSArray *)specifiers {
-    if (_specifiers) return _specifiers;
-    NSString *cat = [self catOfSelf];
-    NSMutableArray *arr = [NSMutableArray array];
-    id grp = NTM_group(cat);
-    if (grp) [arr addObject:grp];
-    for (NSDictionary *app in NTM_allApps()) {
-        if (![app[@"cat"] isEqualToString:cat]) continue;
-        NSString *aid = app[@"id"];
-        NSString *nm  = app[@"name"];
-        id g = NTM_group(nm);
-        if (g) [arr addObject:g];
-        // 总开关
-        id en = NTM_newSwitch(self, @"开启通知", aid, @"en", @selector(getEn:), @selector(setEn:));
-        if (en) [arr addObject:en];
-        // 子开关
-        NSArray *dims = @[ @[@"锁屏", @"lock"], @[@"通知中心", @"nc"], @[@"横幅", @"banner"] ];
-        for (NSArray *pair in dims) {
-            id sub = NTM_newSwitch(self, pair[0], aid, pair[1], @selector(getSub:), @selector(setSub:));
-            if (sub) [arr addObject:sub];
-        }
-    }
-    _specifiers = [arr copy];
-    return _specifiers;
-}
-
-#pragma mark switch getter/setter
-- (id)getEn:(PSSpecifier *)spec { return @(NTM_read(NTM_getProp(spec, @"appId"), NTM_getProp(spec, @"dim"))); }
-- (void)setEn:(NSNumber *)value specifier:(PSSpecifier *)spec { [self doSet:value spec:spec]; }
-- (id)getSub:(PSSpecifier *)spec { return @(NTM_read(NTM_getProp(spec, @"appId"), NTM_getProp(spec, @"dim"))); }
-- (void)setSub:(NSNumber *)value specifier:(PSSpecifier *)spec { [self doSet:value spec:spec]; }
-- (void)doSet:(NSNumber *)value spec:(PSSpecifier *)spec {
-    NSString *appId = NTM_getProp(spec, @"appId");
-    NSString *dim   = NTM_getProp(spec, @"dim");
-    if (!appId || !dim) return;
-    NTM_write(appId, dim, [value boolValue]);
-    NTM_apply(appId);
-}
-@end
-
-#pragma mark - 根页
+#pragma mark - 根页(单一滚动面板)
 
 @implementation NTMPrincipalController
+
+// ---- 开关 getter/setter ----
+- (id)getEn:(PSSpecifier *)spec { return @(NTM_read(NTM_getProp(spec, @"appId"), @"en")); }
+- (void)setEn:(NSNumber *)value specifier:(PSSpecifier *)spec {
+    NTM_write(NTM_getProp(spec, @"appId"), @"en", [value boolValue]);
+    NTM_apply(NTM_getProp(spec, @"appId"));
+}
+- (id)getSub:(PSSpecifier *)spec { return @(NTM_read(NTM_getProp(spec, @"appId"), NTM_getProp(spec, @"dim"))); }
+- (void)setSub:(NSNumber *)value specifier:(PSSpecifier *)spec {
+    NTM_write(NTM_getProp(spec, @"appId"), NTM_getProp(spec, @"dim"), [value boolValue]);
+    NTM_apply(NTM_getProp(spec, @"appId"));
+}
+
+// ---- 一键全开 / 一键全关 ----
+- (void)enableAllNotifications { [self setAll:YES]; }
+- (void)disableAllNotifications { [self setAll:NO]; }
+- (void)setAll:(BOOL)on {
+    for (NSDictionary *app in NTM_allApps()) {
+        NSString *aid = app[@"id"];
+        NTM_write(aid, @"en", on);
+        NTM_apply(aid);
+    }
+    [self reloadSpecifiers];
+}
+
 - (NSArray *)specifiers {
     if (_specifiers) return _specifiers;
     NSMutableArray *arr = [NSMutableArray array];
-    id g = NTM_group(@"通知管理");
-    if (g) [arr addObject:g];
+
+    // 顶部：一键开/关
+    id g0 = NTM_group(@"通知管理");
+    if (g0) [arr addObject:g0];
+    id btnOn  = NTM_newButton(self, @"一键开启所有通知", @selector(enableAllNotifications), nil);
+    id btnOff = NTM_newButton(self, @"一键关闭所有通知", @selector(disableAllNotifications), nil);
+    if (btnOn)  [arr addObject:btnOn];
+    if (btnOff) [arr addObject:btnOff];
+
+    // 三段
     for (NSString *cat in @[ @"用户应用", @"巨魔应用", @"系统应用" ]) {
-        id link = NTM_newLink(self, cat, cat);
-        if (link) [arr addObject:link];
+        id grp = NTM_group(cat);
+        if (grp) [arr addObject:grp];
+        for (NSDictionary *app in NTM_allApps()) {
+            if (![app[@"cat"] isEqualToString:cat]) continue;
+            NSString *aid = app[@"id"];
+            NSString *nm  = app[@"name"];
+
+            // 每 App 一个分组标题 + 总开关 + 3 子开关
+            NSString *bar = [NSString stringWithFormat:@"◆ %@", nm];
+            id apGrp = NTM_group(bar);
+            if (apGrp) [arr addObject:apGrp];
+            id en = NTM_newSwitch(self, @"开启通知", aid, @"en", @selector(getEn:), @selector(setEn:));
+            if (en) [arr addObject:en];
+            NSArray *dims = @[ @[@"锁屏显示", @"lock"], @[@"通知中心", @"nc"], @[@"横幅", @"banner"] ];
+            for (NSArray *pair in dims) {
+                id sub = NTM_newSwitch(self, [@"    " stringByAppendingString:pair[0]],
+                                       aid, pair[1], @selector(getSub:), @selector(setSub:));
+                if (sub) [arr addObject:sub];
+            }
+        }
     }
+
     _specifiers = [arr copy];
     return _specifiers;
 }
-- (id)getLinks:(PSSpecifier *)spec { return nil; }
 @end

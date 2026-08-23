@@ -133,12 +133,12 @@ static id NTM_newSwitch(id target, NSString *title, NSString *appId, NSString *d
                         SEL gSel, SEL sSel) {
     Class PS = NTM_class("PSSpecifier");
     if (!PS) return nil;
-    // +preferenceSpecifierNamed:target:get:set:detail:cell:edit:
+    // +preferenceSpecifierNamed:target:set:get:detail:cell:edit:
     void (*pref)(id, SEL, id, id, SEL, SEL, id, long long, id) =
         (void (*)(id, SEL, id, id, SEL, SEL, id, long long, id))objc_msgSend;
     id spec = ((id (*)(id, SEL, id, id, SEL, SEL, id, long long, id))pref)(
-        (id)PS, sel_registerName("preferenceSpecifierNamed:target:get:set:detail:cell:edit:"),
-        title, target, gSel, sSel, nil, NTM_SWITCH_CELL, nil);
+        (id)PS, sel_registerName("preferenceSpecifierNamed:target:set:get:detail:cell:edit:"),
+        title, target, sSel, gSel, nil, NTM_SWITCH_CELL, nil);
     if (!spec) return nil;
     NTM_setProp(spec, @"appId", appId);
     NTM_setProp(spec, @"dim", dim);
@@ -151,8 +151,8 @@ static id NTM_newLink(id target, NSString *title, NSString *cat) {
     void (*pref)(id, SEL, id, id, SEL, SEL, id, long long, id) =
         (void (*)(id, SEL, id, id, SEL, SEL, id, long long, id))objc_msgSend;
     id spec = ((id (*)(id, SEL, id, id, SEL, SEL, id, long long, id))pref)(
-        (id)PS, sel_registerName("preferenceSpecifierNamed:target:get:set:detail:cell:edit:"),
-        title, target, @selector(getLinks:), NULL,
+        (id)PS, sel_registerName("preferenceSpecifierNamed:target:set:get:detail:cell:edit:"),
+        title, target, NULL, @selector(getLinks:),
         NTM_class("NTMAppsListController"), NTM_LINKLIST, nil);
     if (spec) NTM_setProp(spec, @"cat", cat);
     return spec;

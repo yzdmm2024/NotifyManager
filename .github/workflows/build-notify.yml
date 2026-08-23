@@ -54,6 +54,7 @@ jobs:
           mkdir -p "$BUNDLE"
           cp NotifyManager.dylib "$BUNDLE/NotifyManager"
           cp notifymanager/Info.plist "$BUNDLE/Info.plist"
+          cp notifymanager/NotifyManager@2x.png "$BUNDLE/NotifyManager@2x.png"
           mkdir -p stage/DEBIAN
           mkdir -p "stage/var/jb/Library/PreferenceBundles"
           mkdir -p "stage/var/jb/Library/PreferenceLoader/Preferences"

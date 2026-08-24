@@ -10,7 +10,13 @@
 #import <dlfcn.h>
 
 #pragma mark - 接口声明
-@interface NTMPrincipalController : UIViewController <UISearchBarDelegate>
+// PSViewController 是 PreferenceLoader 控制器的正确基类（实现 PSController 协议），
+// 提供 setSpecifier:/setParentController:/setRootController: 等全部集成方法，
+// 避免 controllerForSpecifier: 调用未实现方法导致 unrecognized selector 崩溃。
+@interface PSViewController : UIViewController
+@end
+
+@interface NTMPrincipalController : PSViewController <UISearchBarDelegate>
 @end
 
 #pragma mark - 存储: NSUserDefaults suiteName (Tweak 读取同一份)
@@ -249,6 +255,13 @@ static NSArray *NTM_allApps(void) {
     NSString *_searchText;
     NSMutableDictionary *_snapshot; // 批量操作前的快照 {appId: {dim: BOOL}}
 }
+
+// PreferenceLoader/PSListController 集成方法（自定义 UI 不使用，仅避免 unrecognized selector 崩溃）
+- (void)setRootController:(id)rootController {}
+- (void)setParentController:(id)parentController {}
+- (void)setSpecifier:(id)specifier {}
+- (void)setPreferenceLoader:(id)preferenceLoader {}
+- (void)setParentController:(id)parentController specifier:(id)specifier {}
 
 static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];

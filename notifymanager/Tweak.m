@@ -11,12 +11,45 @@
 
 static NSString *NTM_suiteName = @"com.ntm.notifymanager";
 
+// 共享 NSUserDefaults 单例，避免每次通知到达都新建实例
+static NSUserDefaults *NTM_prefs(void) {
+    static NSUserDefaults *prefs = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        prefs = [[NSUserDefaults alloc] initWithSuiteName:NTM_suiteName];
+    });
+    return prefs;
+}
+
+// 内存缓存：key=NTM_<dim>_<appId> -> NSNumber，通知到达时零 I/O 读取
+static NSMutableDictionary *NTM_cache(void) {
+    static NSMutableDictionary *cache = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cache = [NSMutableDictionary dictionary];
+    });
+    return cache;
+}
+
+// 设置面板写配置后发 Darwin 通知，这里清空缓存保证读取到最新值
+static void NTM_cacheInvalidated(CFNotificationCenterRef center, void *observer,
+                                 CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    @synchronized(NTM_cache()) {
+        [NTM_cache() removeAllObjects];
+    }
+}
+
 static BOOL NTM_isDimEnabled(NSString *appId, NSString *dim) {
     if (!appId.length) return YES;
-    NSUserDefaults *prefs = [[NSUserDefaults alloc] initWithSuiteName:NTM_suiteName];
-    if (!prefs) return YES;
-    id val = [prefs objectForKey:[NSString stringWithFormat:@"NTM_%@_%@", dim, appId]];
-    return val ? [val boolValue] : YES;
+    NSString *key = [NSString stringWithFormat:@"NTM_%@_%@", dim, appId];
+    @synchronized(NTM_cache()) {
+        NSNumber *cached = NTM_cache()[key];
+        if (cached) return [cached boolValue];
+        id val = [NTM_prefs() objectForKey:key];
+        BOOL v = val ? [val boolValue] : YES;
+        NTM_cache()[key] = @(v);
+        return v;
+    }
 }
 
 // 子维度是否应拦截：总开关关闭 → 全部拦截；否则按该维度开关
@@ -112,6 +145,12 @@ static void tryHook(Class cls, SEL sel, IMP hook, IMP *orig) {
 
 __attribute__((constructor)) static void init() {
     @autoreleasepool {
+        // 监听设置面板的配置变更通知，清空内存缓存
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                        NULL, NTM_cacheInvalidated,
+                                        CFSTR("com.ntm.notifymanager.configChanged"),
+                                        NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+
         // 总开关
         tryHook(objc_getClass("NCNotificationDispatcher"),
                 sel_registerName("postNotificationWithRequest:"),

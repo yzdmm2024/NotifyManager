@@ -1,6 +1,3 @@
-# 构建 IPA：通知管理独立控制面板
-# 配合 Tweak 使用，共享 NSUserDefaults suiteName 通信
-# 推送到 GitHub 自动构建，产物可在 Actions 页面下载
 name: build-ipa
 
 on:
@@ -24,37 +21,16 @@ jobs:
           set -e
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
           echo "iOS SDK: $SDK"
-
           SRC=NotifyManagerIPA/Source
-          RES=NotifyManagerIPA/Resources
-          ENT=NotifyManagerIPA/Entitlements
-
-          # 编译所有源文件
-          clang -x objective-c -arch arm64 -isysroot "$SDK" \
-                -miphoneos-version-min=14.0 -fobjc-arc -fblocks -O2 -fobjc-exceptions \
-                -c "$SRC/main.m" -o main.o
-          clang -x objective-c -arch arm64 -isysroot "$SDK" \
-                -miphoneos-version-min=14.0 -fobjc-arc -fblocks -O2 -fobjc-exceptions \
-                -c "$SRC/AppDelegate.m" -o AppDelegate.o
-          clang -x objective-c -arch arm64 -isysroot "$SDK" \
-                -miphoneos-version-min=14.0 -fobjc-arc -fblocks -O2 -fobjc-exceptions \
-                -c "$SRC/StorageManager.m" -o StorageManager.o
-          clang -x objective-c -arch arm64 -isysroot "$SDK" \
-                -miphoneos-version-min=14.0 -fobjc-arc -fblocks -O2 -fobjc-exceptions \
-                -c "$SRC/AppCardView.m" -o AppCardView.o
-          clang -x objective-c -arch arm64 -isysroot "$SDK" \
-                -miphoneos-version-min=14.0 -fobjc-arc -fblocks -O2 -fobjc-exceptions \
-                -c "$SRC/ViewController.m" -o ViewController.o
-
-          echo "=== Compilation done ==="
-
-          # 链接成可执行文件
+          for f in main.m AppDelegate.m StorageManager.m AppCardView.m ViewController.m; do
+            clang -x objective-c -arch arm64 -isysroot "$SDK" \
+                  -miphoneos-version-min=14.0 -fobjc-arc -fblocks -O2 -fobjc-exceptions \
+                  -c "$SRC/$f" -o "${f%.m}.o"
+          done
           clang -arch arm64 -isysroot "$SDK" -fobjc-arc -fobjc-exceptions \
                 -framework UIKit -framework Foundation -framework CoreGraphics \
                 -framework MobileCoreServices \
                 -o NotifyManagerIPA main.o AppDelegate.o StorageManager.o AppCardView.o ViewController.o
-
-          echo "=== Linking done ==="
           file NotifyManagerIPA
           otool -L NotifyManagerIPA
 
@@ -63,52 +39,27 @@ jobs:
           set -e
           APP="NotifyManager.app"
           mkdir -p "$APP"
-
-          # 可执行文件
           cp NotifyManagerIPA "$APP/NotifyManagerIPA"
-
-          # Info.plist
           cp NotifyManagerIPA/Resources/Info.plist "$APP/"
-
-          # 图标
           if [ -f NotifyManager/NotifyManager@2x.png ]; then
             cp NotifyManager/NotifyManager@2x.png "$APP/AppIcon.png"
           else
-            # 生成 120x120 蓝色占位 PNG (base64编码)
-            python3 -c "
-import struct,zlib
-w,h=120,120
-r,g,b=64,124,220
-raw=b''
-for y in range(h):
-    raw+=b'\\x00'+bytes([r,g,b,255])*w
-def chunk(ct,data):
-    c=ct+data
-    return struct.pack('>I',len(data))+c+struct.pack('>I',zlib.crc32(c)&0xffffffff)
-png=b'\\x89PNG\\r\\n\\x1a\\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',w,h,8,6,0,0,0))+chunk(b'IDAT',zlib.compress(raw))+chunk(b'IEND',b'')
-open('$APP/AppIcon.png','wb').write(png)
-"
+            python3 NotifyManagerIPA/gen_icon.py "$APP/AppIcon.png"
           fi
-
-          # LaunchScreen
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
-          ibtool --compile "$APP/LaunchScreen.nib" NotifyManagerIPA/Resources/LaunchScreen.storyboard \
+          ibtool --compile "$APP/LaunchScreen.nib" \
+                 NotifyManagerIPA/Resources/LaunchScreen.storyboard \
                  --sdk "$SDK" --target-device ios
-
-          # 签名
           export CODESIGN_ALLOCATE=$(xcrun -f codesign_allocate)
           ldid -SNotifyManagerIPA/Entitlements/NotifyManagerIPA.entitlements "$APP/NotifyManagerIPA"
-
-          echo "=== App bundle created ==="
+          echo "=== App bundle ==="
           find "$APP" -type f
 
       - name: Package IPA
         run: |
-          set -e
           mkdir -p Payload
           cp -R NotifyManager.app Payload/
           zip -r NotifyManagerIPA.ipa Payload/
-          echo "=== IPA created ==="
           ls -lh NotifyManagerIPA.ipa
 
       - name: Upload IPA artifact

@@ -379,4 +379,19 @@ static CarCheckFloatingView *sShared = nil;
     [self.inputField resignFirstResponder];
 }
 
+#pragma mark - 触摸穿透（核心修复：面板隐藏时不拦截触摸）
+
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    if (!self.panelVisible) {
+        // 面板隐藏时：只响应悬浮按钮，其他触摸穿透到下方 App
+        CGPoint btnPoint = [self convertPoint:point toView:self.floatBtn];
+        if (CGRectContainsPoint(self.floatBtn.bounds, btnPoint)) {
+            return self.floatBtn;
+        }
+        return nil; // 放行触摸，让下方 App 正常响应
+    }
+    // 面板显示时：正常响应
+    return [super hitTest:point withEvent:event];
+}
+
 @end

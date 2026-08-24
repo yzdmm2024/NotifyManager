@@ -70,31 +70,32 @@ jobs:
           # Info.plist
           cp NotifyManagerIPA/Resources/Info.plist "$APP/"
 
-          # 图标 — 从现有资源复制
-          cp NotifyManager/NotifyManager@2x.png "$APP/AppIcon.png" 2>/dev/null || true
-          # 生成占位图标（纯色 60x60）
-          if [ ! -f "$APP/AppIcon.png" ]; then
+          # 图标
+          if [ -f NotifyManager/NotifyManager@2x.png ]; then
+            cp NotifyManager/NotifyManager@2x.png "$APP/AppIcon.png"
+          else
+            # 生成 120x120 蓝色占位 PNG (base64编码)
             python3 -c "
-import struct, zlib
-def create_png(w, h, r, g, b):
-    def chunk(ct, data):
-        c = ct + data
-        return struct.pack('>I', len(data)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
-    raw = b''
-    for y in range(h):
-        raw += b'\x00' + bytes([r, g, b, 255]) * w
-    return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
-with open('$APP/AppIcon.png', 'wb') as f:
-    f.write(create_png(120, 120, 64, 124, 220))
+import struct,zlib
+w,h=120,120
+r,g,b=64,124,220
+raw=b''
+for y in range(h):
+    raw+=b'\\x00'+bytes([r,g,b,255])*w
+def chunk(ct,data):
+    c=ct+data
+    return struct.pack('>I',len(data))+c+struct.pack('>I',zlib.crc32(c)&0xffffffff)
+png=b'\\x89PNG\\r\\n\\x1a\\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',w,h,8,6,0,0,0))+chunk(b'IDAT',zlib.compress(raw))+chunk(b'IEND',b'')
+open('$APP/AppIcon.png','wb').write(png)
 "
           fi
 
-          # LaunchScreen (从 storyboard 编译)
+          # LaunchScreen
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
           ibtool --compile "$APP/LaunchScreen.nib" NotifyManagerIPA/Resources/LaunchScreen.storyboard \
                  --sdk "$SDK" --target-device ios
 
-          # 签名 — 使用 ldid 注入 TrollStore 兼容 entitlements
+          # 签名
           export CODESIGN_ALLOCATE=$(xcrun -f codesign_allocate)
           ldid -SNotifyManagerIPA/Entitlements/NotifyManagerIPA.entitlements "$APP/NotifyManagerIPA"
 
@@ -106,7 +107,6 @@ with open('$APP/AppIcon.png', 'wb') as f:
           set -e
           mkdir -p Payload
           cp -R NotifyManager.app Payload/
-          # 压缩成 IPA
           zip -r NotifyManagerIPA.ipa Payload/
           echo "=== IPA created ==="
           ls -lh NotifyManagerIPA.ipa

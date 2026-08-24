@@ -62,7 +62,8 @@ static CarCheckFloatingView *sShared = nil;
 - (void)setupFloatButton {
     CGFloat size = 48;
     CGFloat y = [UIScreen mainScreen].bounds.size.height * 0.4;
-    _floatBtn = [[UIButton alloc] initWithFrame:CGRectMake(0, y, size, size)];
+    // 用 UIView 替代 UIButton，避免 UIControl 与手势冲突
+    _floatBtn = [[UIView alloc] initWithFrame:CGRectMake(0, y, size, size)];
     _floatBtn.backgroundColor = [UIColor colorWithWhite:0.15 alpha:0.75];
     _floatBtn.layer.cornerRadius = size / 2;
     _floatBtn.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -70,10 +71,19 @@ static CarCheckFloatingView *sShared = nil;
     _floatBtn.layer.shadowOpacity = 0.3;
     _floatBtn.layer.shadowRadius = 6;
     _floatBtn.alpha = 0.35;
-    [_floatBtn setTitle:@"🚗" forState:UIControlStateNormal];
-    _floatBtn.titleLabel.font = [UIFont systemFontOfSize:20];
-    // 只用 UIControlEventTouchUpInside，不用手势（避免冲突）
-    [_floatBtn addTarget:self action:@selector(floatBtnTapped) forControlEvents:UIControlEventTouchUpInside];
+    _floatBtn.userInteractionEnabled = YES;
+    // 用 UILabel 显示 emoji（UIButton 的 title 在某些 App 中可能不渲染）
+    UILabel *emoji = [[UILabel alloc] initWithFrame:_floatBtn.bounds];
+    emoji.text = @"🚗";
+    emoji.font = [UIFont systemFontOfSize:20];
+    emoji.textAlignment = NSTextAlignmentCenter;
+    emoji.userInteractionEnabled = NO;
+    [_floatBtn addSubview:emoji];
+    // 点击手势（不依赖 UIControlEvent）
+    UITapGestureRecognizer *tapGR = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(floatBtnTapped)];
+    tapGR.numberOfTapsRequired = 1;
+    [_floatBtn addGestureRecognizer:tapGR];
+    // 拖动手势
     UIPanGestureRecognizer *panGR = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handleFloatPan:)];
     panGR.cancelsTouchesInView = NO;
     panGR.delaysTouchesBegan = NO;

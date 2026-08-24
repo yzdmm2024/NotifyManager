@@ -36,7 +36,16 @@ static CarCheckFloatingView *sShared = nil;
     CGRect screen = [UIScreen mainScreen].bounds;
     self = [super initWithFrame:screen];
     if (self) {
-        self.windowLevel = UIWindowLevelAlert + 100;
+        // 关联 windowScene（iOS 13+ 必需，否则咸鱼等 App 会卡死）
+        if (@available(iOS 13.0, *)) {
+            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if ([scene isKindOfClass:NSClassFromString(@"UIWindowScene")]) {
+                    self.windowScene = (UIWindowScene *)scene;
+                    break;
+                }
+            }
+        }
+        self.windowLevel = 2100; // 替代 UIWindowLevelAlert + 100
         self.hidden = NO;
         self.backgroundColor = [UIColor clearColor];
         self.userInteractionEnabled = YES;

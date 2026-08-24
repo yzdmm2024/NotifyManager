@@ -7,3 +7,4 @@ Description: OpenPilot 车型查询工具 - 悬浮窗口查询车型是否支持
 Maintainer: ntm
 Author: ntm
 Section: Tweaks
+Icon: file:///Library/Application Support/CarCheckPlugin/icon.png

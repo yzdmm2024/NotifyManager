@@ -352,6 +352,9 @@ static CarCheckFloatingView *sShared = nil;
 #pragma mark - Show / Hide
 
 - (void)show {
+    // 取消可能残留的 hide 动画
+    [self.panel.layer removeAllAnimations];
+    [self.bgMask.layer removeAllAnimations];
     [self wakeFloatBtn];
     self.panelVisible = YES;
     self.panel.hidden = NO;

@@ -72,16 +72,13 @@ static CarCheckFloatingView *sShared = nil;
     _floatBtn.alpha = 0.35;
     [_floatBtn setTitle:@"🚗" forState:UIControlStateNormal];
     _floatBtn.titleLabel.font = [UIFont systemFontOfSize:20];
+    // 只用 UIControlEventTouchUpInside，不用手势（避免冲突）
     [_floatBtn addTarget:self action:@selector(floatBtnTapped) forControlEvents:UIControlEventTouchUpInside];
-    // 用 tap 手势确保点击优先，pan 不 cancel 触摸
-    UITapGestureRecognizer *tapBtn = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(floatBtnTapped)];
-    [_floatBtn addGestureRecognizer:tapBtn];
     UIPanGestureRecognizer *panGR = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handleFloatPan:)];
     panGR.cancelsTouchesInView = NO;
     panGR.delaysTouchesBegan = NO;
     panGR.delaysTouchesEnded = NO;
     [_floatBtn addGestureRecognizer:panGR];
-    // 动画：2秒后变半透明，点击时恢复不透明
     [self performSelector:@selector(fadeFloatBtn) withObject:nil afterDelay:2.0];
     [self addSubview:_floatBtn];
 }
@@ -101,9 +98,8 @@ static CarCheckFloatingView *sShared = nil;
 }
 
 - (void)floatBtnTapped {
-    if (!self.isDraggingBtn) {
-        [self show];
-    }
+    self.isDraggingBtn = NO;
+    [self show];
 }
 
 - (void)handleFloatPan:(UIPanGestureRecognizer *)gr {

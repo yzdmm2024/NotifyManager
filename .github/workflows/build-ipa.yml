@@ -47,10 +47,6 @@ jobs:
           else
             python3 NotifyManagerIPA/gen_icon.py "$APP/AppIcon.png"
           fi
-          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
-          ibtool --compile "$APP/LaunchScreen.nib" \
-                 NotifyManagerIPA/Resources/LaunchScreen.storyboard \
-                 --sdk "$SDK" --target-device ios
           export CODESIGN_ALLOCATE=$(xcrun -f codesign_allocate)
           ldid -SNotifyManagerIPA/Entitlements/NotifyManagerIPA.entitlements "$APP/NotifyManagerIPA"
           echo "=== App bundle ==="

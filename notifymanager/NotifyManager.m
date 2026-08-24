@@ -52,9 +52,17 @@ static BOOL NTM_readWith(NSUserDefaults *prefs, NSString *appId, NSString *dim) 
     id v = [prefs objectForKey:NTM_key(appId, dim)];
     return v ? [v boolValue] : YES;
 }
+// 通知 SpringBoard 的 Tweak 清空缓存，保证拦截逻辑读到最新配置
+static void NTM_postConfigChanged(void) {
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                         CFSTR("com.ntm.notifymanager.configChanged"),
+                                         NULL, NULL, YES);
+}
+
 static void NTM_write(NSString *appId, NSString *dim, BOOL val) {
     [NTM_prefs() setBool:val forKey:NTM_key(appId, dim)];
     [NTM_prefs() synchronize];
+    NTM_postConfigChanged();
 }
 
 #pragma mark - 网络权限存储
@@ -573,6 +581,7 @@ static NSArray *NTM_allApps(void) {
     // 联动：总开关切换时同步所有子开关
     for (NSDictionary *d in NTM_dims()) [prefs setBool:sender.on forKey:NTM_key(_appId, d[@"key"])];
     [prefs synchronize];
+    NTM_postConfigChanged();
     [self reloadFromPrefs];
     NTM_syncSystemAsync(_appId);
     if (_onMasterChange) _onMasterChange(_appId, sender.on);
@@ -595,6 +604,7 @@ static NSArray *NTM_allApps(void) {
     [prefs setBool:YES forKey:NTM_key(_appId, @"en")];
     for (NSDictionary *d in NTM_dims()) [prefs setBool:YES forKey:NTM_key(_appId, d[@"key"])];
     [prefs synchronize];
+    NTM_postConfigChanged();
     [self reloadFromPrefs];
     NTM_syncSystemAsync(_appId);
     if (_onReset) _onReset(_appId);
@@ -924,6 +934,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     NSArray *netIdsCopy = [netIds copy];
     dispatch_async(NTM_syncQueue(), ^{
         [prefs synchronize];
+        NTM_postConfigChanged();
         for (NSString *aid in idsCopy) NTM_syncSystem(aid);
         for (NSString *aid in netIdsCopy) NTM_syncCellular(aid, netPolicy);
     });
@@ -959,7 +970,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         }
         NTM_syncSystemAsync(aid);
     }
-    dispatch_async(NTM_syncQueue(), ^{ [prefs synchronize]; });
+    dispatch_async(NTM_syncQueue(), ^{ [prefs synchronize]; NTM_postConfigChanged(); });
 }
 
 #pragma mark - 导入/导出
@@ -1029,7 +1040,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         NTM_syncSystemAsync(aid);
         count++;
     }
-    dispatch_async(NTM_syncQueue(), ^{ [prefs synchronize]; });
+    dispatch_async(NTM_syncQueue(), ^{ [prefs synchronize]; NTM_postConfigChanged(); });
     [self refreshAllCards];
     [self refreshStat];
     [self toast:[NSString stringWithFormat:@"已导入 %ld 个应用", (long)count]];

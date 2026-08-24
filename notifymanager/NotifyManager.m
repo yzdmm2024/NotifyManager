@@ -3,6 +3,7 @@
 // 每个 App：总开关 + 锁定屏幕/通知中心/横幅/声音/标记 子开关 + 单应用重置
 // 支持：分类切换、搜索、统计、批量开启/关闭/恢复自定义、导入/导出配置
 // 配置保存到 NSUserDefaults suiteName，Tweak 读取并拦截通知
+// 设置变更时同步到系统通知设置 (BBSettingsGateway)
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -16,7 +17,7 @@
 @interface PSViewController : UIViewController
 @end
 
-@interface NTMPrincipalController : PSViewController <UISearchBarDelegate>
+@interface NTMPrincipalController : PSViewController <UISearchBarDelegate, UIDocumentPickerDelegate>
 @end
 
 #pragma mark - 存储: NSUserDefaults suiteName (Tweak 读取同一份)
@@ -33,6 +34,31 @@ static void NTM_write(NSString *appId, NSString *dim, BOOL val) {
     NSUserDefaults *prefs = [[NSUserDefaults alloc] initWithSuiteName:NTM_suite];
     [prefs setBool:val forKey:NTM_key(appId, dim)];
     [prefs synchronize];
+}
+
+#pragma mark - 同步到系统通知设置 (BBSettingsGateway)
+// 让"设置 → 通知"里的系统设置跟随本面板的开关，双向一致
+static void NTM_syncSystem(NSString *appId) {
+    if (!appId.length) return;
+    @try {
+        Class gwCls = NSClassFromString(@"BBSettingsGateway");
+        if (!gwCls) return;
+        id gateway = [[gwCls alloc] init];
+        if (!gateway) return;
+        id info = [gateway performSelector:@selector(sectionInfoForSectionID:) withObject:appId];
+        if (!info) return;
+        BOOL en = NTM_read(appId, @"en");
+        [info setValue:@(en) forKey:@"allowsNotifications"];
+        [info setValue:@(NTM_read(appId, @"lock")) forKey:@"showsInLockScreen"];
+        [info setValue:@(NTM_read(appId, @"nc")) forKey:@"showsInNotificationCenter"];
+        [info setValue:@(NTM_read(appId, @"banner") ? 1 : 0) forKey:@"alertType"];
+        [info setValue:@(NTM_read(appId, @"sound")) forKey:@"soundEnabled"];
+        [info setValue:@(NTM_read(appId, @"badge")) forKey:@"badgeEnabled"];
+        SEL setSel = NSSelectorFromString(@"setSectionInfo:forSectionID:");
+        if ([gateway respondsToSelector:setSel]) {
+            [gateway performSelector:setSel withObject:info withObject:appId];
+        }
+    } @catch(NSException *e) {}
 }
 
 #pragma mark - 维度定义
@@ -68,6 +94,7 @@ static UIImage *NTM_iconFor(NSString *bid) {
     return nil;
 }
 
+// 枚举 App：不在此处加载图标（图标放到卡片里异步加载），避免进入面板卡顿
 static NSArray *NTM_allApps(void) {
     NSMutableArray *out = [NSMutableArray array];
     Class wk = objc_getClass("LSApplicationWorkspace");
@@ -89,7 +116,7 @@ static NSArray *NTM_allApps(void) {
         if ([cat isEqualToString:@"系统应用"] &&
             ([path hasPrefix:@"/System/Library/"] && ![bid hasPrefix:@"com.apple"])) continue;
         [out addObject:@{ @"id":bid, @"name":(name.length?name:bid), @"cat":cat,
-                          @"icon":(NTM_iconFor(bid) ?: [NSNull null]) }];
+                          @"icon":[NSNull null] }];
     }
     NSArray *order = @[@"用户应用", @"巨魔应用", @"系统应用"];
     [out sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b){
@@ -133,17 +160,25 @@ static NSArray *NTM_allApps(void) {
 
 - (void)buildUI:(NSDictionary *)app {
     NSArray *dims = NTM_dims();
-    UIImage *icon = (app[@"icon"] != [NSNull null]) ? app[@"icon"] : nil;
 
     // 头部行：图标 + 名称 + 重置 + 总开关
     UIImageView *iconView = [[UIImageView alloc] init];
     iconView.contentMode = UIViewContentModeScaleAspectFill;
     iconView.layer.cornerRadius = 8;
     iconView.clipsToBounds = YES;
-    if (icon) iconView.image = icon;
-    else iconView.backgroundColor = [UIColor colorWithRed:0.45 green:0.62 blue:0.98 alpha:1];
+    iconView.backgroundColor = [UIColor colorWithRed:0.45 green:0.62 blue:0.98 alpha:1];
     [iconView.widthAnchor constraintEqualToConstant:32].active = YES;
     [iconView.heightAnchor constraintEqualToConstant:32].active = YES;
+
+    // 图标异步加载，不阻塞主线程
+    NSString *bid = _appId;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        UIImage *icon = NTM_iconFor(bid);
+        if (!icon) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            iconView.image = icon;
+        });
+    });
 
     UILabel *nameLabel = [[UILabel alloc] init];
     nameLabel.text = app[@"name"];
@@ -213,6 +248,10 @@ static NSArray *NTM_allApps(void) {
 
 - (void)masterChanged:(UISwitch *)sender {
     NTM_write(_appId, @"en", sender.on);
+    // 联动：总开关切换时同步所有子开关
+    for (NSDictionary *d in NTM_dims()) NTM_write(_appId, d[@"key"], sender.on);
+    [self reloadFromPrefs];
+    NTM_syncSystem(_appId);
     if (_onMasterChange) _onMasterChange(_appId, sender.on);
 }
 
@@ -221,6 +260,14 @@ static NSArray *NTM_allApps(void) {
     if (idx == NSNotFound || idx >= NTM_dims().count) return;
     NSDictionary *d = NTM_dims()[idx];
     NTM_write(_appId, d[@"key"], sender.on);
+    // 联动：所有子开关都开 → 总开关开；任一子开关关 → 总开关关
+    BOOL allOn = YES;
+    for (UISwitch *sw in _dimSwitches) {
+        if (!sw.on) { allOn = NO; break; }
+    }
+    _masterSwitch.on = allOn;
+    NTM_write(_appId, @"en", allOn);
+    NTM_syncSystem(_appId);
     if (_onDimChange) _onDimChange(_appId, d[@"key"], sender.on);
 }
 
@@ -228,6 +275,7 @@ static NSArray *NTM_allApps(void) {
     NTM_write(_appId, @"en", YES);
     for (NSDictionary *d in NTM_dims()) NTM_write(_appId, d[@"key"], YES);
     [self reloadFromPrefs];
+    NTM_syncSystem(_appId);
     if (_onReset) _onReset(_appId);
 }
 
@@ -249,6 +297,8 @@ static NSArray *NTM_allApps(void) {
     UILabel *_statLabel;
     UIScrollView *_scrollView;
     UIStackView *_listStack;
+    UIActivityIndicatorView *_spinner;
+    NSMutableArray *_cards;
     NSArray *_allApps;
     NSArray *_curApps;
     NSString *_curCat;
@@ -281,15 +331,27 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     _curCat = @"用户应用";
     _searchText = @"";
     _snapshot = [NSMutableDictionary dictionary];
+    _cards = [NSMutableArray array];
 
-    @try {
-        NSString *log = [NSString stringWithFormat:@"NTM panel loaded\n"];
-        [log writeToFile:@"/tmp/ntm_prefs.log" atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    } @catch(NSException *e) {}
-
-    _allApps = NTM_allApps();
     [self buildUI];
-    [self reloadList];
+
+    // 异步加载应用列表，避免进入面板卡顿
+    _spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+    _spinner.translatesAutoresizingMaskIntoConstraints = NO;
+    [_spinner startAnimating];
+    [self.view addSubview:_spinner];
+    [NSLayoutConstraint activateConstraints:@[
+        [_spinner.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [_spinner.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
+    ]];
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSArray *apps = NTM_allApps();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            _allApps = apps;
+            [self reloadList];
+        });
+    });
 }
 
 - (void)buildUI {
@@ -329,7 +391,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [UIColor colorWithRed:0.13 green:0.55 blue:0.24 alpha:1]);
     [importBtn addTarget:self action:@selector(importConfig) forControlEvents:UIControlEventTouchUpInside];
 
-    for (UIView *v in @[_catSeg, _searchBar, _statLabel, _batchSeg, _scrollView, exportBtn, importBtn]) {
+    for (UIView *v in @[_batchSeg, _statLabel, _searchBar, _catSeg, _scrollView, exportBtn, importBtn]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [self.view addSubview:v];
     }
@@ -362,7 +424,8 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [exportBtn.trailingAnchor constraintEqualToAnchor:importBtn.leadingAnchor constant:-12],
         [exportBtn.widthAnchor constraintEqualToAnchor:importBtn.widthAnchor],
 
-        [_scrollView.topAnchor constraintEqualToAnchor:_batchSeg.bottomAnchor constant:12],
+        // 关键修复：滚动列表必须位于分类栏(catSeg)之下，否则会盖住分类/搜索/统计
+        [_scrollView.topAnchor constraintEqualToAnchor:_catSeg.bottomAnchor constant:12],
         [_scrollView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [_scrollView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [_scrollView.bottomAnchor constraintEqualToAnchor:exportBtn.topAnchor constant:-12],
@@ -375,12 +438,19 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     ]];
 }
 
+- (void)hideSpinner {
+    [_spinner stopAnimating];
+    [_spinner removeFromSuperview];
+    _spinner = nil;
+}
+
 #pragma mark - 列表
 - (void)reloadList {
     for (UIView *v in [_listStack.arrangedSubviews copy]) {
         [_listStack removeArrangedSubview:v];
         [v removeFromSuperview];
     }
+    [_cards removeAllObjects];
 
     NSMutableArray *filtered = [NSMutableArray array];
     for (NSDictionary *app in _allApps) {
@@ -401,18 +471,42 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         empty.textAlignment = NSTextAlignmentCenter;
         [_listStack addArrangedSubview:empty];
         [empty.heightAnchor constraintEqualToConstant:80].active = YES;
+        [self hideSpinner];
+        [self refreshStat];
+        return;
     }
 
-    for (NSDictionary *app in filtered) {
-        NTMAppCardView *card = [[NTMAppCardView alloc] initWithApp:app];
-        [card.heightAnchor constraintEqualToConstant:122].active = YES;
-        __weak typeof(self) wself = self;
-        card.onDimChange = ^(NSString *aid, NSString *dim, BOOL val) { [wself refreshStat]; };
-        card.onMasterChange = ^(NSString *aid, BOOL val) { [wself refreshStat]; };
-        card.onReset = ^(NSString *aid) { [wself refreshStat]; };
-        [_listStack addArrangedSubview:card];
-    }
-    [self refreshStat];
+    // 分批创建卡片（每批 40 张），让转圈动画持续、UI 保持响应
+    __block NSUInteger idx = 0;
+    __weak typeof(self) wself = self;
+    void (^nextBatch)(void) = ^{
+        typeof(self) sself = wself;
+        if (!sself) return;
+        NSUInteger end = MIN(idx + 40, filtered.count);
+        for (; idx < end; idx++) {
+            NSDictionary *app = filtered[idx];
+            NTMAppCardView *card = [[NTMAppCardView alloc] initWithApp:app];
+            [card.heightAnchor constraintEqualToConstant:122].active = YES;
+            __weak typeof(sself) ws = sself;
+            card.onDimChange = ^(NSString *aid, NSString *dim, BOOL val) { [ws refreshStat]; };
+            card.onMasterChange = ^(NSString *aid, BOOL val) { [ws refreshStat]; };
+            card.onReset = ^(NSString *aid) { [ws refreshStat]; };
+            [sself->_listStack addArrangedSubview:card];
+            [sself->_cards addObject:card];
+        }
+        if (idx < filtered.count) {
+            dispatch_async(dispatch_get_main_queue(), nextBatch);
+        } else {
+            [sself hideSpinner];
+            [sself refreshStat];
+        }
+    };
+    dispatch_async(dispatch_get_main_queue(), nextBatch);
+}
+
+// 批量操作后直接刷新现有卡片开关，避免重建列表
+- (void)refreshAllCards {
+    for (NTMAppCardView *card in _cards) [card reloadFromPrefs];
 }
 
 - (void)refreshStat {
@@ -442,26 +536,37 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     NSInteger idx = _batchSeg.selectedSegmentIndex;
     if (idx == 0) {
         [self saveSnapshot];
-        for (NSDictionary *app in _curApps) {
-            NTM_write(app[@"id"], @"en", YES);
-            for (NSDictionary *d in NTM_dims()) NTM_write(app[@"id"], d[@"key"], YES);
-        }
-        [self reloadList];
+        [self batchWrite:YES];
+        [self refreshAllCards];
+        [self refreshStat];
         [self toast:@"已全部开启"];
     } else if (idx == 1) {
         [self saveSnapshot];
-        for (NSDictionary *app in _curApps) {
-            NTM_write(app[@"id"], @"en", NO);
-            for (NSDictionary *d in NTM_dims()) NTM_write(app[@"id"], d[@"key"], NO);
-        }
-        [self reloadList];
+        [self batchWrite:NO];
+        [self refreshAllCards];
+        [self refreshStat];
         [self toast:@"已全部关闭"];
     } else {
         [self restoreSnapshot];
-        [self reloadList];
+        [self refreshAllCards];
+        [self refreshStat];
         [self toast:@"已恢复自定义设置"];
     }
     _batchSeg.selectedSegmentIndex = 2;
+}
+
+// 批量写入：一次 synchronize，避免 2000+ 次磁盘写导致 UI 冻结
+- (void)batchWrite:(BOOL)val {
+    NSUserDefaults *prefs = [[NSUserDefaults alloc] initWithSuiteName:NTM_suite];
+    NSMutableArray *ids = [NSMutableArray array];
+    for (NSDictionary *app in _curApps) {
+        NSString *aid = app[@"id"];
+        [ids addObject:aid];
+        [prefs setBool:val forKey:NTM_key(aid, @"en")];
+        for (NSDictionary *d in NTM_dims()) [prefs setBool:val forKey:NTM_key(aid, d[@"key"])];
+    }
+    [prefs synchronize];
+    for (NSString *aid in ids) NTM_syncSystem(aid);
 }
 
 - (void)saveSnapshot {
@@ -484,6 +589,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
             id v = d[dim[@"key"]];
             if (v) NTM_write(aid, dim[@"key"], [v boolValue]);
         }
+        NTM_syncSystem(aid);
     }
 }
 
@@ -509,13 +615,27 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     if (!data) { [self toast:@"导出失败"]; return; }
     NSString *path = [self configPath];
     if (![data writeToFile:path atomically:YES]) { [self toast:@"导出失败，无写入权限"]; return; }
-    [self toast:[NSString stringWithFormat:@"已导出 %lu 个应用", (unsigned long)arr.count]];
+    [self toast:[NSString stringWithFormat:@"已导出 %lu 个应用\n%@", (unsigned long)arr.count, path]];
+    // 弹出分享面板，方便保存到"文件"App
+    NSURL *url = [NSURL fileURLWithPath:path];
+    UIActivityViewController *avc = [[UIActivityViewController alloc] initWithActivityItems:@[url] applicationActivities:nil];
+    avc.popoverPresentationController.sourceView = self.view;
+    avc.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width/2, self.view.bounds.size.height/2, 1, 1);
+    [self presentViewController:avc animated:YES completion:nil];
 }
 
 - (void)importConfig {
-    NSString *path = [self configPath];
-    NSData *data = [NSData dataWithContentsOfFile:path];
-    if (!data) { [self toast:@"未找到配置文件"]; return; }
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
+        initWithDocumentTypes:@[@"public.json", @"public.data"] inMode:UIDocumentPickerModeImport];
+    picker.delegate = self;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    NSURL *url = urls.firstObject;
+    if (!url) return;
+    NSData *data = [NSData dataWithContentsOfURL:url];
+    if (!data) { [self toast:@"读取文件失败"]; return; }
     NSArray *arr = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     if (![arr isKindOfClass:[NSArray class]]) { [self toast:@"配置格式错误"]; return; }
     NSInteger count = 0;
@@ -530,9 +650,11 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
                 NTM_write(aid, k, [dims[k] boolValue]);
             }
         }
+        NTM_syncSystem(aid);
         count++;
     }
-    [self reloadList];
+    [self refreshAllCards];
+    [self refreshStat];
     [self toast:[NSString stringWithFormat:@"已导入 %ld 个应用", (long)count]];
 }
 
@@ -551,21 +673,22 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     l.text = msg;
     l.font = [UIFont systemFontOfSize:13];
     l.textColor = [UIColor whiteColor];
-    l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.75];
+    l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.78];
     l.layer.cornerRadius = 10;
     l.clipsToBounds = YES;
     l.textAlignment = NSTextAlignmentCenter;
+    l.numberOfLines = 0;
     l.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:l];
     [NSLayoutConstraint activateConstraints:@[
         [l.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-        [l.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-70],
-        [l.widthAnchor constraintGreaterThanOrEqualToConstant:140],
-        [l.heightAnchor constraintEqualToConstant:36],
+        [l.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
+        [l.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.view.leadingAnchor constant:30],
+        [l.trailingAnchor constraintLessThanOrEqualToAnchor:self.view.trailingAnchor constant:-30],
     ]];
     l.alpha = 0;
     [UIView animateWithDuration:0.2 animations:^{ l.alpha = 1; }];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [UIView animateWithDuration:0.3 animations:^{ l.alpha = 0; } completion:^(BOOL f){ [l removeFromSuperview]; }];
     });
 }

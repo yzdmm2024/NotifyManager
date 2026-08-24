@@ -1,7 +1,7 @@
 // NotifyManager.m — 通知管理设置面板（自定义现代 UI）
 // 枚举已安装 App，按分类(用户/巨魔/系统)展示
 // 每个 App：总开关 + 锁定屏幕/通知中心/横幅/声音/标记 子开关 + 单应用重置
-// 蜂窝网络里的 App 额外显示 4 个网络策略按钮：打开wifi/流量/wifi+流量/断网
+// 每个 App 显示 4 个网络策略按钮：打开wifi/流量/wifi+流量/断网
 // 支持：分类切换、搜索、统计、批量开启/关闭/恢复自定义、导入/导出配置
 // 列表使用 UITableView 虚拟化，切换分类/搜索即时响应
 // 配置保存到 NSUserDefaults suiteName，Tweak 读取并拦截通知
@@ -87,25 +87,6 @@ static NSInteger NTM_netRead(NSString *appId) {
 static void NTM_netWrite(NSString *appId, NSInteger policy) {
     [NTM_prefs() setInteger:policy forKey:NTM_netKey(appId)];
     [NTM_prefs() synchronize];
-}
-
-// 蜂窝网络设置中的应用集合（来自 com.apple.cellularplan.plist AppPolicy）
-static NSMutableSet *NTM_cellularSet(void) {
-    static NSMutableSet *set = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        set = [NSMutableSet set];
-        NSDictionary *ap = NTM_cellularPolicies();
-        [set addObjectsFromArray:[ap allKeys]];
-    });
-    return set;
-}
-static BOOL NTM_hasCellular(NSString *appId) {
-    NSSet *s = NTM_cellularSet();
-    if (!s.count) return YES; // 读取失败时默认显示网络按钮
-    if ([s containsObject:appId]) return YES;
-    // 在本面板设置过网络策略的 App 也显示网络按钮（覆盖导入配置等场景）
-    return [NTM_prefs() objectForKey:NTM_netKey(appId)] != nil;
 }
 
 static NSArray *NTM_netOptions(void) {
@@ -220,7 +201,6 @@ static void NTM_syncCellular(NSString *appId, NSInteger policy) {
             id cache = [(id)cls sharedInstance];
             if (cache) {
                 [cache setUsagePoliciesForBundle:appId cellular:cellular wifi:wifi];
-                [NTM_cellularSet() addObject:appId];
                 NSLog(@"[NTM] cellular %@ policy=%ld cell=%d wifi=%d (PSAppDataUsagePolicyCache)",
                       appId, (long)policy, cellular, wifi);
                 return;
@@ -244,7 +224,6 @@ static void NTM_syncCellular(NSString *appId, NSInteger policy) {
                     @"kCTWiFiDataUsagePolicy": wifiS,
                 };
                 setPolicy(conn, appId, policies);
-                [NTM_cellularSet() addObject:appId];
             }
         }
         dlclose(handle);
@@ -413,7 +392,6 @@ static NSArray *NTM_allApps(void) {
 #pragma mark - App 卡片视图
 @interface NTMAppCardView : UIView
 @property (nonatomic, strong) NSString *appId;
-@property (nonatomic, assign) BOOL showNetwork;
 @property (nonatomic, strong) UISwitch *masterSwitch;
 @property (nonatomic, strong) NSMutableArray *dimSwitches;
 @property (nonatomic, strong) NSMutableArray *netButtons;
@@ -431,7 +409,6 @@ static NSArray *NTM_allApps(void) {
     self = [super init];
     if (self) {
         _appId = app[@"id"];
-        _showNetwork = NTM_hasCellular(_appId);
         _dimSwitches = [NSMutableArray array];
         _netButtons = [NSMutableArray array];
         self.backgroundColor = [UIColor whiteColor];
@@ -521,7 +498,7 @@ static NSArray *NTM_allApps(void) {
     dimRow.spacing = 4;
 
     NSMutableArray *rows = [NSMutableArray arrayWithArray:@[header, dimRow]];
-    if (_showNetwork) [rows addObject:[self buildNetRow]];
+    [rows addObject:[self buildNetRow]];
     UIStackView *v = [[UIStackView alloc] initWithArrangedSubviews:rows];
     v.axis = UILayoutConstraintAxisVertical;
     v.spacing = 12;
@@ -811,10 +788,9 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     return _curApps.count;
 }
 
-// 有网络按钮的卡片更高（蜂窝网络里的 App），其余保持原高度
+// 所有 App 卡片统一高度（含网络按钮行）
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    NSDictionary *app = _curApps[indexPath.row];
-    return NTM_hasCellular(app[@"id"]) ? 178 : 134;
+    return 178;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -930,7 +906,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
 }
 
 // 批量写入：内存写入即时生效，磁盘落盘与系统同步放后台串行队列，避免主线程卡顿
-// 联动网络：仅对蜂窝网络里的 App 生效，开启=wifi+流量(0)，关闭=断网(1)
+// 联动网络：所有 App 生效，开启=wifi+流量(0)，关闭=断网(1)
 - (void)batchWrite:(BOOL)val {
     NSUserDefaults *prefs = NTM_prefs();
     NSMutableArray *ids = [NSMutableArray array];
@@ -941,10 +917,8 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [ids addObject:aid];
         [prefs setBool:val forKey:NTM_key(aid, @"en")];
         for (NSDictionary *d in NTM_dims()) [prefs setBool:val forKey:NTM_key(aid, d[@"key"])];
-        if (NTM_hasCellular(aid)) {
-            [prefs setInteger:netPolicy forKey:NTM_netKey(aid)];
-            [netIds addObject:aid];
-        }
+        [prefs setInteger:netPolicy forKey:NTM_netKey(aid)];
+        [netIds addObject:aid];
     }
     NSArray *idsCopy = [ids copy];
     NSArray *netIdsCopy = [netIds copy];

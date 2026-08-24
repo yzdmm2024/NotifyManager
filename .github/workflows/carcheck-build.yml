@@ -41,6 +41,9 @@ jobs:
           ls -la $HOME/theos/sdks/ 2>/dev/null
           echo "SDK check done"
 
+      - name: Install ldid
+        run: brew install ldid
+
       - name: Build
         run: |
           export THEOS=$HOME/theos

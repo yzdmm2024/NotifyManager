@@ -26,7 +26,23 @@
     %orig;
     // 延迟等窗口就绪后再添加手势
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *keyWin = [[UIApplication sharedApplication] keyWindow];
+        UIWindow *keyWin = nil;
+        if (@available(iOS 13, *)) {
+            NSSet *scenes = [[UIApplication sharedApplication] valueForKey:@"connectedScenes"];
+            for (UIScene *scene in scenes) {
+                if ([scene isKindOfClass:NSClassFromString(@"UIWindowScene")] &&
+                    scene.activationState == UISceneActivationStateForegroundActive) {
+                    id delegate = [scene valueForKey:@"delegate"];
+                    if ([delegate respondsToSelector:@selector(window)]) {
+                        keyWin = [delegate valueForKey:@"window"];
+                    }
+                    break;
+                }
+            }
+        }
+        if (!keyWin) {
+            keyWin = [[UIApplication sharedApplication] keyWindow];
+        }
         if (keyWin) {
             UITapGestureRecognizer *tap5 = [[UITapGestureRecognizer alloc]
                 initWithTarget:[_CarCheckTrigger shared] action:@selector(handleTap:)];

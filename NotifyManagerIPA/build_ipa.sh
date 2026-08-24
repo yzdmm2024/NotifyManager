@@ -34,7 +34,8 @@ done
 
 clang -arch arm64 -isysroot "$SDK" -fobjc-arc -fobjc-exceptions \
       -framework UIKit -framework Foundation -framework CoreGraphics \
-      -framework MobileCoreServices \
+      -framework MobileCoreServices -framework QuartzCore \
+      -framework UniformTypeIdentifiers \
       -o "$APP_DIR/NotifyManagerIPA" \
       "$BUILD_DIR"/main.o "$BUILD_DIR"/AppDelegate.o \
       "$BUILD_DIR"/StorageManager.o "$BUILD_DIR"/AppCardView.o \

@@ -1,0 +1,76 @@
+name: Update Cydia Repo
+
+on:
+  workflow_run:
+    workflows: ["Build CarCheckPlugin"]
+    types:
+      - completed
+
+jobs:
+  update-repo:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - name: Checkout Cydia repo
+        uses: actions/checkout@v4
+        with:
+          repository: yzdmm2024/repo
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download deb artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: CarCheckPlugin
+          path: ./debs/
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Regenerate Packages
+        run: |
+          cd debs
+          for deb in *.deb; do
+            [ -f "$deb" ] || continue
+            dpkg-deb -f "$deb" > /tmp/control
+            cat /tmp/control
+            echo "Filename: ./debs/$deb"
+            echo "Size: $(stat -c%s "$deb")"
+            echo "MD5sum: $(md5sum "$deb" | cut -d' ' -f1)"
+            echo "SHA1: $(sha1sum "$deb" | cut -d' ' -f1)"
+            echo "SHA256: $(sha256sum "$deb" | cut -d' ' -f1)"
+            echo ""
+          done > ../Packages
+          cd ..
+          bzip2 -zkf Packages
+          echo "Packages regenerated"
+
+      - name: Update Release
+        run: |
+          cat > Release << 'EOF'
+          Origin: NTM 越狱源
+          Label: NTM Repo
+          Suite: stable
+          Version: 1.0
+          Codename: ios
+          Architectures: iphoneos-arm64
+          Components: main
+          Description: 通知管理 + CarCheckPlugin 越狱源
+          Support: https://github.com/yzdmm2024/repo
+          EOF
+          echo "Date: $(date -R)" >> Release
+          echo "MD5Sum:" >> Release
+          echo " $(md5sum Packages | cut -d' ' -f1) $(stat -c%s Packages) Packages" >> Release
+          echo " $(md5sum Packages.bz2 | cut -d' ' -f1) $(stat -c%s Packages.bz2) Packages.bz2" >> Release
+          echo "SHA1:" >> Release
+          echo " $(sha1sum Packages | cut -d' ' -f1) $(stat -c%s Packages) Packages" >> Release
+          echo " $(sha1sum Packages.bz2 | cut -d' ' -f1) $(stat -c%s Packages.bz2) Packages.bz2" >> Release
+          echo "SHA256:" >> Release
+          echo " $(sha256sum Packages | cut -d' ' -f1) $(stat -c%s Packages) Packages" >> Release
+          echo " $(sha256sum Packages.bz2 | cut -d' ' -f1) $(stat -c%s Packages.bz2) Packages.bz2" >> Release
+
+      - name: Commit and Push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --staged --quiet || git commit -m "Auto-update: $(date +'%Y-%m-%d %H:%M')"
+          git push

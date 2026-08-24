@@ -8,8 +8,7 @@ static NSString *const kConfigChangedNotification = @"com.ntm.notifymanager.conf
 @implementation StorageManager {
     NSUserDefaults *_prefs;
     NSMutableDictionary *_cache;
-    id _bbGateway;           // BBSettingsGateway 常驻单例
-    dispatch_queue_t _syncQueue;
+    id _bbGateway;
 }
 
 + (NSString *)suiteName { return kSuiteName; }
@@ -27,20 +26,22 @@ static NSString *const kConfigChangedNotification = @"com.ntm.notifymanager.conf
     if (self = [super init]) {
         _prefs = [[NSUserDefaults alloc] initWithSuiteName:kSuiteName];
         _cache = [NSMutableDictionary dictionary];
-        _syncQueue = dispatch_queue_create("com.ntm.sync", DISPATCH_QUEUE_SERIAL);
-        [self setupBBSettingsGateway];
+        // BBSettingsGateway 懒加载，不阻塞启动
     }
     return self;
 }
 
-/// 尝试初始化 BBSettingsGateway 常驻单例
-- (void)setupBBSettingsGateway {
-    Class cls = NSClassFromString(@"BBSettingsGateway");
-    if (!cls) {
-        dlopen("/System/Library/PrivateFrameworks/BulletinBoard.framework/BulletinBoard", RTLD_NOW);
-        cls = NSClassFromString(@"BBSettingsGateway");
+/// 懒加载 BBSettingsGateway（仅当需要同步时创建）
+- (id)_bbGateway {
+    if (!_bbGateway) {
+        Class cls = NSClassFromString(@"BBSettingsGateway");
+        if (!cls) {
+            dlopen("/System/Library/PrivateFrameworks/BulletinBoard.framework/BulletinBoard", RTLD_NOW);
+            cls = NSClassFromString(@"BBSettingsGateway");
+        }
+        if (cls) _bbGateway = [[cls alloc] init];
     }
-    if (cls) _bbGateway = [[cls alloc] init];
+    return _bbGateway;
 }
 
 #pragma mark - Dimensions
@@ -157,22 +158,30 @@ static NSString *const kConfigChangedNotification = @"com.ntm.notifymanager.conf
 #pragma mark - Batch
 
 - (void)batchWrite:(BOOL)enabled forApps:(NSArray<NSString *> *)appIds netPolicy:(NSInteger)netPolicy {
+    // 批量写入 NSUserDefaults（主线程，极快）
+    NSMutableDictionary *bulk = [NSMutableDictionary dictionary];
     for (NSString *aid in appIds) {
-        [_prefs setBool:enabled forKey:[self _keyForApp:aid dim:@"en"]];
+        bulk[[self _keyForApp:aid dim:@"en"]] = @(enabled);
         for (NSDictionary *d in [self allDims]) {
-            [_prefs setBool:enabled forKey:[self _keyForApp:aid dim:d[@"key"]]];
+            bulk[[self _keyForApp:aid dim:d[@"key"]]] = @(enabled);
         }
-        [_prefs setInteger:netPolicy forKey:[self _netKeyForApp:aid]];
+        bulk[[self _netKeyForApp:aid]] = @(netPolicy);
     }
+    [_prefs setValuesForKeysWithDictionary:bulk];
     @synchronized(_cache) { [_cache removeAllObjects]; }
-    [_prefs synchronize];
-    [self postConfigChanged];
-    // 批量同步后台执行
-    dispatch_async(_syncQueue, ^{
-        for (NSString *aid in appIds) {
+    // synchronize + postNotification + 系统同步 全部异步到后台
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        [_prefs synchronize];
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            (__bridge CFStringRef)kConfigChangedNotification,
+            NULL, NULL, YES);
+        // 并行同步 BBSettingsGateway（每个 App 独立 XPC 调用）
+        [appIds enumerateObjectsWithOptions:NSEnumerationConcurrent
+                                 usingBlock:^(NSString *aid, NSUInteger idx, BOOL *stop) {
             [self syncSystemNotificationForApp:aid];
             [self syncSystemCellularForApp:aid];
-        }
+        }];
     });
 }
 
@@ -192,31 +201,33 @@ static NSString *const kConfigChangedNotification = @"com.ntm.notifymanager.conf
 }
 
 - (void)restoreSnapshot:(NSDictionary *)snapshot {
-    NSMutableArray *changedIds = [NSMutableArray array];
+    NSMutableDictionary *bulk = [NSMutableDictionary dictionary];
     for (NSString *aid in snapshot) {
         NSDictionary *d = snapshot[aid];
         id en = d[@"en"];
-        if (en) [_prefs setBool:[en boolValue] forKey:[self _keyForApp:aid dim:@"en"]];
+        if (en) bulk[[self _keyForApp:aid dim:@"en"]] = en;
         for (NSDictionary *dim in [self allDims]) {
             id v = d[dim[@"key"]];
-            if (v) [_prefs setBool:[v boolValue] forKey:[self _keyForApp:aid dim:dim[@"key"]]];
+            if (v) bulk[[self _keyForApp:aid dim:dim[@"key"]]] = v;
         }
         id net = d[@"net"];
-        if (net) {
-            [_prefs setInteger:[net integerValue] forKey:[self _netKeyForApp:aid]];
-        }
-        [changedIds addObject:aid];
+        if (net) bulk[[self _netKeyForApp:aid]] = net;
     }
+    [_prefs setValuesForKeysWithDictionary:bulk];
+    NSArray *changedIds = [snapshot allKeys];
     @synchronized(_cache) { [_cache removeAllObjects]; }
-    [_prefs synchronize];
-    [self postConfigChanged];
-    // 后台同步
-    dispatch_async(_syncQueue, ^{
-        for (NSString *aid in changedIds) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        [_prefs synchronize];
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            (__bridge CFStringRef)kConfigChangedNotification,
+            NULL, NULL, YES);
+        [changedIds enumerateObjectsWithOptions:NSEnumerationConcurrent
+                                    usingBlock:^(NSString *aid, NSUInteger idx, BOOL *stop) {
             [self syncSystemNotificationForApp:aid];
             id net = snapshot[aid][@"net"];
             if (net) [self syncSystemCellularForApp:aid];
-        }
+        }];
     });
 }
 
@@ -240,30 +251,36 @@ static NSString *const kConfigChangedNotification = @"com.ntm.notifymanager.conf
 }
 
 - (NSInteger)importConfig:(NSArray *)config {
+    NSMutableDictionary *bulk = [NSMutableDictionary dictionary];
     NSMutableArray *changedIds = [NSMutableArray array];
     for (NSDictionary *d in config) {
         NSString *aid = d[@"appId"];
         if (!aid.length) continue;
         id en = d[@"en"];
-        if (en) [_prefs setBool:[en boolValue] forKey:[self _keyForApp:aid dim:@"en"]];
+        if (en) bulk[[self _keyForApp:aid dim:@"en"]] = en;
         NSDictionary *dims = d[@"dims"];
         if ([dims isKindOfClass:[NSDictionary class]]) {
             for (NSString *k in dims) {
-                [_prefs setBool:[dims[k] boolValue] forKey:[self _keyForApp:aid dim:k]];
+                bulk[[self _keyForApp:aid dim:k]] = dims[k];
             }
         }
         id net = d[@"net"];
-        if (net) [_prefs setInteger:[net integerValue] forKey:[self _netKeyForApp:aid]];
+        if (net) bulk[[self _netKeyForApp:aid]] = net;
         [changedIds addObject:aid];
     }
+    [_prefs setValuesForKeysWithDictionary:bulk];
     @synchronized(_cache) { [_cache removeAllObjects]; }
-    [_prefs synchronize];
-    [self postConfigChanged];
-    dispatch_async(_syncQueue, ^{
-        for (NSString *aid in changedIds) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        [_prefs synchronize];
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            (__bridge CFStringRef)kConfigChangedNotification,
+            NULL, NULL, YES);
+        [changedIds enumerateObjectsWithOptions:NSEnumerationConcurrent
+                                    usingBlock:^(NSString *aid, NSUInteger idx, BOOL *stop) {
             [self syncSystemNotificationForApp:aid];
             [self syncSystemCellularForApp:aid];
-        }
+        }];
     });
     return changedIds.count;
 }
@@ -272,7 +289,7 @@ static NSString *const kConfigChangedNotification = @"com.ntm.notifymanager.conf
 
 - (void)syncSystemNotificationAsync:(NSString *)appId {
     if (!appId.length) return;
-    dispatch_async(_syncQueue, ^{
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         [self syncSystemNotificationForApp:appId];
     });
 }
@@ -280,7 +297,7 @@ static NSString *const kConfigChangedNotification = @"com.ntm.notifymanager.conf
 - (void)syncSystemNotificationForApp:(NSString *)appId {
     if (!appId.length) return;
     @try {
-        id gateway = _bbGateway;
+        id gateway = [self _bbGateway];
         if (!gateway) return;
         id info = [gateway performSelector:@selector(sectionInfoForSectionID:) withObject:appId];
         if (!info) return;
@@ -322,7 +339,7 @@ static NSString *const kConfigChangedNotification = @"com.ntm.notifymanager.conf
     // 先存 NSUserDefaults
     [_prefs setInteger:policy forKey:[self _netKeyForApp:appId]];
     [_prefs synchronize];
-    dispatch_async(_syncQueue, ^{
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         [self syncSystemCellularForApp:appId];
     });
 }

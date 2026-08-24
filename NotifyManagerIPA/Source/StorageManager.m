@@ -341,12 +341,16 @@ static NSString *const kConfigChangedNotification = @"com.ntm.notifymanager.conf
             cls = NSClassFromString(@"PSAppDataUsagePolicyCache");
         }
         if (cls) {
-            id cache = [(id)cls sharedInstance];
+            id cache = [cls performSelector:@selector(sharedInstance)];
             if (cache) {
-                [cache setUsagePoliciesForBundle:appId cellular:cellular wifi:wifi];
-                NSLog(@"[NTM] cellular %@ policy=%ld cell=%d wifi=%d (PSAppDataUsagePolicyCache)",
-                      appId, (long)policy, cellular, wifi);
-                return;
+                SEL sel = NSSelectorFromString(@"setUsagePoliciesForBundle:cellular:wifi:");
+                if ([cache respondsToSelector:sel]) {
+                    // 使用 objc_msgSend 避免编译时类型检查
+                    ((void (*)(id, SEL, NSString*, BOOL, BOOL))objc_msgSend)(cache, sel, appId, cellular, wifi);
+                    NSLog(@"[NTM] cellular %@ policy=%ld cell=%d wifi=%d (PSAppDataUsagePolicyCache)",
+                          appId, (long)policy, cellular, wifi);
+                    return;
+                }
             }
         }
     } @catch(NSException *e) {

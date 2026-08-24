@@ -208,6 +208,41 @@ static NSArray *kCategories(void) {
     return appleSign ? @"用户应用" : @"巨魔应用";
 }
 
+- (NSSet *)_systemAppKeepList {
+    // 只保留这些系统应用，其余过滤掉
+    return [NSSet setWithArray:@[
+        @"com.apple.mobilenotes",          // 备忘录
+        @"com.apple.podcasts",             // 播客
+        @"com.apple.measurify",            // 测距仪
+        @"com.apple.findmy",               // 查找
+        @"com.apple.Maps",                 // 地图
+        @"com.apple.Translate",            // 翻译
+        @"com.apple.magnifier",            // 放大器
+        @"com.apple.mobilephone",          // FaceTime通话
+        @"com.apple.stocks",               // 股市
+        @"com.apple.calculator",           // 计算器
+        @"com.apple.Home",                 // 家庭
+        @"com.apple.Health",               // 健康
+        @"com.apple.Fitness",              // 健身
+        @"com.apple.shortcuts",            // 快捷指令
+        @"com.apple.Passbook",             // 钱包
+        @"com.apple.mobilecal",            // 日历
+        @"com.apple.mobiletimer",          // 时钟
+        @"com.apple.tv",                   // 视频
+        @"com.apple.tips",                 // 提示
+        @"com.apple.reminders",            // 提醒事项
+        @"com.apple.weather",              // 天气
+        @"com.apple.MobileAddressBook",    // 通讯录
+        @"com.apple.iBooks",               // 图书
+        @"com.apple.DocumentsApp",         // 文件
+        @"com.apple.freeform",             // 无边记
+        @"com.apple.Bridge",               // Watch
+        @"com.apple.Music",                // 音乐
+        @"com.apple.mobilemail",           // 邮件
+        @"com.apple.VoiceMemos",           // 语音备忘录
+    ]];
+}
+
 - (NSArray *)enumerateApps {
     NSMutableArray *out = [NSMutableArray array];
     Class wk = objc_getClass("LSApplicationWorkspace");
@@ -220,6 +255,7 @@ static NSArray *kCategories(void) {
     id ws = ((id (*)(id, SEL))objc_msgSend)((id)wk, sel_registerName("defaultWorkspace"));
     if (!ws) return out;
 
+    NSSet *sysKeep = [self _systemAppKeepList];
     NSArray *proxies = ((id (*)(id, SEL))objc_msgSend)(ws, sel_registerName("allApplications"));
     for (id proxy in proxies) {
         NSString *bid  = ((id (*)(id, SEL))objc_msgSend)(proxy, sel_registerName("applicationIdentifier"));
@@ -228,8 +264,10 @@ static NSArray *kCategories(void) {
         NSString *path = [(NSURL *)url path] ?: @"";
         if (!bid.length || !path.length) continue;
         NSString *cat = [self categoryOfProxy:proxy];
-        // 系统应用只保留 /Applications/ 下的有 UI 的应用
-        if ([cat isEqualToString:@"系统应用"] && ![path hasPrefix:@"/Applications/"]) continue;
+        if ([cat isEqualToString:@"系统应用"]) {
+            if (![path hasPrefix:@"/Applications/"]) continue;
+            if (![sysKeep containsObject:bid]) continue;
+        }
         [out addObject:@{ @"id": bid, @"name": (name.length ? name : bid), @"cat": cat }];
     }
 
@@ -349,7 +387,6 @@ static NSArray *kCategories(void) {
     [mgr batchWrite:YES forApps:ids netPolicy:0];
     [self refreshAllCards];
     [self refreshStat];
-    [self toast:@"已全部开启"];
 }
 
 - (void)allOffTapped {
@@ -360,18 +397,13 @@ static NSArray *kCategories(void) {
     [mgr batchWrite:NO forApps:ids netPolicy:1];
     [self refreshAllCards];
     [self refreshStat];
-    [self toast:@"已全部关闭"];
 }
 
 - (void)customTapped {
-    if (!_snapshot.count) {
-        [self toast:@"没有快照可恢复，请先点全部开启/关闭"];
-        return;
-    }
+    if (!_snapshot.count) return;
     [[StorageManager shared] restoreSnapshot:_snapshot];
     [self refreshAllCards];
     [self refreshStat];
-    [self toast:@"已恢复自定义配置"];
 }
 
 - (void)saveSnapshot {
@@ -383,12 +415,11 @@ static NSArray *kCategories(void) {
 - (void)exportConfig {
     NSArray *config = [[StorageManager shared] exportConfigForAllApps:_allApps];
     NSData *data = [NSJSONSerialization dataWithJSONObject:config options:NSJSONWritingPrettyPrinted error:nil];
-    if (!data) { [self toast:@"导出失败"]; return; }
+    if (!data) return;
 
     NSString *path = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject
                       stringByAppendingPathComponent:@"NotifyManagerConfig.json"];
-    if (![data writeToFile:path atomically:YES]) { [self toast:@"导出失败，无写入权限"]; return; }
-    [self toast:[NSString stringWithFormat:@"已导出 %lu 个应用", (unsigned long)config.count]];
+    if (![data writeToFile:path atomically:YES]) return;
 
     NSURL *url = [NSURL fileURLWithPath:path];
     UIActivityViewController *avc = [[UIActivityViewController alloc] initWithActivityItems:@[url] applicationActivities:nil];
@@ -408,13 +439,12 @@ static NSArray *kCategories(void) {
     NSURL *url = urls.firstObject;
     if (!url) return;
     NSData *data = [NSData dataWithContentsOfURL:url];
-    if (!data) { [self toast:@"读取文件失败"]; return; }
+    if (!data) return;
     NSArray *arr = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-    if (![arr isKindOfClass:[NSArray class]]) { [self toast:@"配置格式错误"]; return; }
-    NSInteger count = [[StorageManager shared] importConfig:arr];
+    if (![arr isKindOfClass:[NSArray class]]) return;
+    [[StorageManager shared] importConfig:arr];
     [self refreshAllCards];
     [self refreshStat];
-    [self toast:[NSString stringWithFormat:@"已导入 %ld 个应用", (long)count]];
 }
 
 #pragma mark - Search
@@ -433,33 +463,6 @@ static NSArray *kCategories(void) {
     [searchBar resignFirstResponder];
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(applySearch) object:nil];
     [self applySearch];
-}
-
-#pragma mark - Toast
-
-- (void)toast:(NSString *)msg {
-    UILabel *l = [[UILabel alloc] init];
-    l.text = msg;
-    l.font = [UIFont systemFontOfSize:13];
-    l.textColor = [UIColor whiteColor];
-    l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.78];
-    l.layer.cornerRadius = 10;
-    l.clipsToBounds = YES;
-    l.textAlignment = NSTextAlignmentCenter;
-    l.numberOfLines = 0;
-    l.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:l];
-    [NSLayoutConstraint activateConstraints:@[
-        [l.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-        [l.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
-        [l.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.view.leadingAnchor constant:30],
-        [l.trailingAnchor constraintLessThanOrEqualToAnchor:self.view.trailingAnchor constant:-30],
-    ]];
-    l.alpha = 0;
-    [UIView animateWithDuration:0.2 animations:^{ l.alpha = 1; }];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [UIView animateWithDuration:0.3 animations:^{ l.alpha = 0; } completion:^(BOOL f){ [l removeFromSuperview]; }];
-    });
 }
 
 @end

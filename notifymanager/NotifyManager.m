@@ -479,7 +479,8 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     // 分批创建卡片（每批 40 张），让转圈动画持续、UI 保持响应
     __block NSUInteger idx = 0;
     __weak typeof(self) wself = self;
-    void (^nextBatch)(void) = ^{
+    __block void (^nextBatch)(void);
+    nextBatch = ^{
         typeof(self) sself = wself;
         if (!sself) return;
         NSUInteger end = MIN(idx + 40, filtered.count);

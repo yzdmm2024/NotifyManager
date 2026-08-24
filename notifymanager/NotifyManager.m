@@ -318,13 +318,7 @@ static NSArray *NTM_allApps(void) {
     if (idx == NSNotFound || idx >= NTM_dims().count) return;
     NSDictionary *d = NTM_dims()[idx];
     NTM_write(_appId, d[@"key"], sender.on);
-    // 联动：所有子开关都开 → 总开关开；任一子开关关 → 总开关关
-    BOOL allOn = YES;
-    for (UISwitch *sw in _dimSwitches) {
-        if (!sw.on) { allOn = NO; break; }
-    }
-    _masterSwitch.on = allOn;
-    NTM_write(_appId, @"en", allOn);
+    // 各子开关独立控制，互不联动；总开关仅由总开关本身控制
     NTM_syncSystem(_appId);
     if (_onDimChange) _onDimChange(_appId, d[@"key"], sender.on);
 }
@@ -508,6 +502,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
 
     NSDictionary *app = _curApps[indexPath.row];
     NTMAppCardView *card = [[NTMAppCardView alloc] initWithApp:app];
+    [card reloadFromPrefs]; // 加载实际开关状态，避免重建后全部显示为关
     card.translatesAutoresizingMaskIntoConstraints = NO;
     [cell.contentView addSubview:card];
     [NSLayoutConstraint activateConstraints:@[
@@ -574,13 +569,9 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         NSString *aid = app[@"id"];
         if (NTM_readWith(prefs, aid, @"en")) on++;
         total++;
-        for (NSDictionary *d in NTM_dims()) {
-            total++;
-            if (NTM_readWith(prefs, aid, d[@"key"])) on++;
-        }
     }
     NSString *scope = _searchText.length ? [NSString stringWithFormat:@"搜索：%@", _searchText] : _curCat;
-    _statLabel.text = [NSString stringWithFormat:@"%@    已开启 %ld / %ld 项",
+    _statLabel.text = [NSString stringWithFormat:@"%@    已开启 %ld / %ld 个应用",
                        scope, (long)on, (long)total];
 }
 

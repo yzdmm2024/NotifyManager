@@ -53,10 +53,6 @@ cp "$BUILD_DIR/NTMApp" "$APP_DIR/NotifyManagerIPA"
 cp "$PROJECT_DIR/NotifyManager/NotifyManager@2x.png" "$APP_DIR/AppIcon.png" 2>/dev/null || \
   echo "Warning: No icon found, app will use default icon"
 
-# LaunchScreen
-ibtool --compile "$APP_DIR/LaunchScreen.nib" "$RES/LaunchScreen.storyboard" \
-       --sdk "$SDK" --target-device ios
-
 # 签名
 echo ">>> 签名..."
 export CODESIGN_ALLOCATE=$(xcrun -f codesign_allocate)

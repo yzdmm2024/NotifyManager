@@ -31,16 +31,16 @@ jobs:
                 -framework UIKit -framework Foundation -framework CoreGraphics \
                 -framework MobileCoreServices -framework QuartzCore \
                 -framework UniformTypeIdentifiers \
-                -o NotifyManagerIPA main.o AppDelegate.o StorageManager.o AppCardView.o ViewController.o
-          file NotifyManagerIPA
-          otool -L NotifyManagerIPA
+                -o NTMApp main.o AppDelegate.o StorageManager.o AppCardView.o ViewController.o
+          file NTMApp
+          otool -L NTMApp
 
       - name: Create app bundle
         run: |
           set -e
           APP="NotifyManager.app"
           mkdir -p "$APP"
-          cp NotifyManagerIPA "$APP/NotifyManagerIPA"
+          cp NTMApp "$APP/NotifyManagerIPA"
           cp NotifyManagerIPA/Resources/Info.plist "$APP/"
           if [ -f NotifyManager/NotifyManager@2x.png ]; then
             cp NotifyManager/NotifyManager@2x.png "$APP/AppIcon.png"

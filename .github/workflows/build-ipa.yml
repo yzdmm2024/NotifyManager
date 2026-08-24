@@ -29,7 +29,8 @@ jobs:
           done
           clang -arch arm64 -isysroot "$SDK" -fobjc-arc -fobjc-exceptions \
                 -framework UIKit -framework Foundation -framework CoreGraphics \
-                -framework MobileCoreServices \
+                -framework MobileCoreServices -framework QuartzCore \
+                -framework UniformTypeIdentifiers \
                 -o NotifyManagerIPA main.o AppDelegate.o StorageManager.o AppCardView.o ViewController.o
           file NotifyManagerIPA
           otool -L NotifyManagerIPA

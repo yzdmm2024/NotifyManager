@@ -2,6 +2,8 @@
 #import "AppCardView.h"
 #import "StorageManager.h"
 #import <objc/message.h>
+#import <dlfcn.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 @interface ViewController ()
 @property (nonatomic, strong) UISegmentedControl *catSeg;
@@ -34,11 +36,11 @@ static NSArray *kCategories(void) {
     // 渐变背景
     CAGradientLayer *gradient = [CAGradientLayer layer];
     gradient.frame = self.view.bounds;
-    gradient.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     gradient.colors = @[
         (id)[UIColor colorWithRed:0.95 green:0.96 blue:0.98 alpha:1].CGColor,
         (id)[UIColor colorWithRed:0.92 green:0.94 blue:0.97 alpha:1].CGColor,
     ];
+    gradient.name = @"NTM_background_gradient";
     [self.view.layer insertSublayer:gradient atIndex:0];
 
     _curCat = @"用户应用";
@@ -63,6 +65,17 @@ static NSArray *kCategories(void) {
             [self reloadList];
         });
     });
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    for (CALayer *layer in self.view.layer.sublayers) {
+        if ([layer isKindOfClass:[CAGradientLayer class]] &&
+            [layer.name isEqualToString:@"NTM_background_gradient"]) {
+            layer.frame = self.view.bounds;
+            break;
+        }
+    }
 }
 
 #pragma mark - Build UI
@@ -386,7 +399,7 @@ static NSArray *kCategories(void) {
 
 - (void)importConfig {
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
-        initWithDocumentTypes:@[@"public.json", @"public.data"] inMode:UIDocumentPickerModeImport];
+        initForOpeningContentTypes:@[[UTType typeWithIdentifier:@"public.json"]] asCopy:NO];
     picker.delegate = self;
     [self presentViewController:picker animated:YES completion:nil];
 }

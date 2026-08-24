@@ -26,9 +26,17 @@ static NSString *NTM_suite = @"com.ntm.notifymanager";
 static NSString *NTM_key(NSString *appId, NSString *dim) {
     return [NSString stringWithFormat:@"NTM_%@_%@", dim, appId];
 }
+// 共享 NSUserDefaults 实例，避免每次读写都新建实例导致批量操作卡顿
+static NSUserDefaults *NTM_prefs(void) {
+    static NSUserDefaults *prefs = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        prefs = [[NSUserDefaults alloc] initWithSuiteName:NTM_suite];
+    });
+    return prefs;
+}
 static BOOL NTM_read(NSString *appId, NSString *dim) {
-    NSUserDefaults *prefs = [[NSUserDefaults alloc] initWithSuiteName:NTM_suite];
-    id v = [prefs objectForKey:NTM_key(appId, dim)];
+    id v = [NTM_prefs() objectForKey:NTM_key(appId, dim)];
     return v ? [v boolValue] : YES;
 }
 static BOOL NTM_readWith(NSUserDefaults *prefs, NSString *appId, NSString *dim) {
@@ -36,9 +44,8 @@ static BOOL NTM_readWith(NSUserDefaults *prefs, NSString *appId, NSString *dim) 
     return v ? [v boolValue] : YES;
 }
 static void NTM_write(NSString *appId, NSString *dim, BOOL val) {
-    NSUserDefaults *prefs = [[NSUserDefaults alloc] initWithSuiteName:NTM_suite];
-    [prefs setBool:val forKey:NTM_key(appId, dim)];
-    [prefs synchronize];
+    [NTM_prefs() setBool:val forKey:NTM_key(appId, dim)];
+    [NTM_prefs() synchronize];
 }
 
 #pragma mark - 同步到系统通知设置 (BBSettingsGateway)
@@ -116,40 +123,60 @@ static NSArray *NTM_dims(void) {
     ];
 }
 
-#pragma mark - 系统应用通知过滤
-// 缓存一次 BulletinBoard 的所有 section，判断某 App 是否注册了通知
+#pragma mark - 系统通知 section
+// 缓存一次 BulletinBoard 的所有 section（含 查找/跟踪通知/家庭 等非 /Applications 的漏网之鱼）
+// 返回 [{id, name}]，用于补齐系统通知列表与判断某 App 是否注册了通知
+static NSArray *NTM_systemSections(void) {
+    static NSArray *arr = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableArray *out = [NSMutableArray array];
+        @try {
+            id gateway = NTM_gateway();
+            if (gateway) {
+                id sections = nil;
+                SEL sels[] = {NSSelectorFromString(@"sectionInfoList"),
+                              NSSelectorFromString(@"allSectionInfo"),
+                              NSSelectorFromString(@"sectionInfos")};
+                for (int i = 0; i < 3 && !sections; i++) {
+                    if ([gateway respondsToSelector:sels[i]]) {
+                        sections = [gateway performSelector:sels[i]];
+                    }
+                }
+                NSArray *secList = nil;
+                if ([sections isKindOfClass:[NSArray class]]) {
+                    secList = sections;
+                } else if ([sections isKindOfClass:[NSDictionary class]]) {
+                    secList = [sections allValues];
+                }
+                for (id info in secList) {
+                    NSString *sid = nil;
+                    @try { sid = [info performSelector:@selector(sectionID)]; } @catch(NSException *e) {}
+                    if (!sid.length) {
+                        @try { sid = [info performSelector:@selector(sectionIdentifier)]; } @catch(NSException *e) {}
+                    }
+                    if (!sid.length) continue;
+                    NSString *name = nil;
+                    @try { name = [info performSelector:@selector(sectionName)]; } @catch(NSException *e) {}
+                    if (!name.length) {
+                        @try { name = [info performSelector:@selector(displayName)]; } @catch(NSException *e) {}
+                    }
+                    if (!name.length) name = sid;
+                    [out addObject:@{@"id":sid, @"name":name}];
+                }
+            }
+        } @catch(NSException *e) {}
+        arr = [out copy];
+    });
+    return arr;
+}
+
 static NSSet *NTM_notifSet(void) {
     static NSMutableSet *set = nil;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         set = [NSMutableSet set];
-        @try {
-            Class gwCls = NSClassFromString(@"BBSettingsGateway");
-            if (gwCls) {
-                id gateway = [[gwCls alloc] init];
-                if (gateway) {
-                    id sections = nil;
-                    SEL sels[] = {NSSelectorFromString(@"sectionInfoList"),
-                                  NSSelectorFromString(@"allSectionInfo"),
-                                  NSSelectorFromString(@"sectionInfos")};
-                    for (int i = 0; i < 3 && !sections; i++) {
-                        if ([gateway respondsToSelector:sels[i]]) {
-                            sections = [gateway performSelector:sels[i]];
-                        }
-                    }
-                    if ([sections isKindOfClass:[NSArray class]]) {
-                        for (id info in sections) {
-                            NSString *sid = nil;
-                            @try { sid = [info performSelector:@selector(sectionID)]; } @catch(NSException *e) {}
-                            if (!sid.length) {
-                                @try { sid = [info performSelector:@selector(sectionIdentifier)]; } @catch(NSException *e) {}
-                            }
-                            if (sid.length) [set addObject:sid];
-                        }
-                    }
-                }
-            }
-        } @catch(NSException *e) {}
+        for (NSDictionary *sec in NTM_systemSections()) [set addObject:sec[@"id"]];
     });
     return set;
 }
@@ -208,6 +235,15 @@ static NSArray *NTM_allApps(void) {
         }
         [out addObject:@{ @"id":bid, @"name":(name.length?name:bid), @"cat":cat,
                           @"icon":[NSNull null] }];
+    }
+    // 合并系统通知 section，补齐 查找/跟踪通知/家庭 等非 /Applications 的漏网之鱼
+    NSMutableSet *seen = [NSMutableSet set];
+    for (NSDictionary *app in out) [seen addObject:app[@"id"]];
+    for (NSDictionary *sec in NTM_systemSections()) {
+        NSString *sid = sec[@"id"];
+        if ([seen containsObject:sid]) continue;
+        [seen addObject:sid];
+        [out addObject:@{@"id":sid, @"name":sec[@"name"], @"cat":@"系统应用", @"icon":[NSNull null]}];
     }
     NSArray *order = @[@"用户应用", @"巨魔应用", @"系统应用"];
     [out sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b){
@@ -338,9 +374,11 @@ static NSArray *NTM_allApps(void) {
 }
 
 - (void)masterChanged:(UISwitch *)sender {
-    NTM_write(_appId, @"en", sender.on);
+    NSUserDefaults *prefs = NTM_prefs();
+    [prefs setBool:sender.on forKey:NTM_key(_appId, @"en")];
     // 联动：总开关切换时同步所有子开关
-    for (NSDictionary *d in NTM_dims()) NTM_write(_appId, d[@"key"], sender.on);
+    for (NSDictionary *d in NTM_dims()) [prefs setBool:sender.on forKey:NTM_key(_appId, d[@"key"])];
+    [prefs synchronize];
     [self reloadFromPrefs];
     NTM_syncSystemAsync(_appId);
     if (_onMasterChange) _onMasterChange(_appId, sender.on);
@@ -359,8 +397,10 @@ static NSArray *NTM_allApps(void) {
 }
 
 - (void)resetTapped {
-    NTM_write(_appId, @"en", YES);
-    for (NSDictionary *d in NTM_dims()) NTM_write(_appId, d[@"key"], YES);
+    NSUserDefaults *prefs = NTM_prefs();
+    [prefs setBool:YES forKey:NTM_key(_appId, @"en")];
+    for (NSDictionary *d in NTM_dims()) [prefs setBool:YES forKey:NTM_key(_appId, d[@"key"])];
+    [prefs synchronize];
     [self reloadFromPrefs];
     NTM_syncSystemAsync(_appId);
     if (_onReset) _onReset(_appId);
@@ -625,7 +665,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
 }
 
 - (void)refreshStat {
-    NSUserDefaults *prefs = [[NSUserDefaults alloc] initWithSuiteName:NTM_suite];
+    NSUserDefaults *prefs = NTM_prefs();
     NSInteger total = 0, on = 0;
     for (NSDictionary *app in _curApps) {
         NSString *aid = app[@"id"];
@@ -649,7 +689,6 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     [self batchWrite:YES];
     [self refreshAllCards];
     [self refreshStat];
-    [self toast:@"已全部开启"];
 }
 
 - (void)allOffTapped {
@@ -657,19 +696,17 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     [self batchWrite:NO];
     [self refreshAllCards];
     [self refreshStat];
-    [self toast:@"已全部关闭"];
 }
 
 - (void)customTapped {
     [self restoreSnapshot];
     [self refreshAllCards];
     [self refreshStat];
-    [self toast:@"已恢复自定义设置"];
 }
 
-// 批量写入：一次 synchronize；系统同步放到后台串行队列，避免阻塞 UI 且防止交错
+// 批量写入：内存写入即时生效，磁盘落盘与系统同步放后台串行队列，避免主线程卡顿
 - (void)batchWrite:(BOOL)val {
-    NSUserDefaults *prefs = [[NSUserDefaults alloc] initWithSuiteName:NTM_suite];
+    NSUserDefaults *prefs = NTM_prefs();
     NSMutableArray *ids = [NSMutableArray array];
     for (NSDictionary *app in _curApps) {
         NSString *aid = app[@"id"];
@@ -677,35 +714,38 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [prefs setBool:val forKey:NTM_key(aid, @"en")];
         for (NSDictionary *d in NTM_dims()) [prefs setBool:val forKey:NTM_key(aid, d[@"key"])];
     }
-    [prefs synchronize];
     NSArray *idsCopy = [ids copy];
     dispatch_async(NTM_syncQueue(), ^{
+        [prefs synchronize];
         for (NSString *aid in idsCopy) NTM_syncSystem(aid);
     });
 }
 
 - (void)saveSnapshot {
     [_snapshot removeAllObjects];
+    NSUserDefaults *prefs = NTM_prefs();
     for (NSDictionary *app in _curApps) {
         NSString *aid = app[@"id"];
         NSMutableDictionary *d = [NSMutableDictionary dictionary];
-        d[@"en"] = @(NTM_read(aid, @"en"));
-        for (NSDictionary *dim in NTM_dims()) d[dim[@"key"]] = @(NTM_read(aid, dim[@"key"]));
+        d[@"en"] = @(NTM_readWith(prefs, aid, @"en"));
+        for (NSDictionary *dim in NTM_dims()) d[dim[@"key"]] = @(NTM_readWith(prefs, aid, dim[@"key"]));
         _snapshot[aid] = d;
     }
 }
 
 - (void)restoreSnapshot {
+    NSUserDefaults *prefs = NTM_prefs();
     for (NSString *aid in _snapshot) {
         NSDictionary *d = _snapshot[aid];
         id en = d[@"en"];
-        if (en) NTM_write(aid, @"en", [en boolValue]);
+        if (en) [prefs setBool:[en boolValue] forKey:NTM_key(aid, @"en")];
         for (NSDictionary *dim in NTM_dims()) {
             id v = d[dim[@"key"]];
-            if (v) NTM_write(aid, dim[@"key"], [v boolValue]);
+            if (v) [prefs setBool:[v boolValue] forKey:NTM_key(aid, dim[@"key"])];
         }
         NTM_syncSystemAsync(aid);
     }
+    dispatch_async(NTM_syncQueue(), ^{ [prefs synchronize]; });
 }
 
 #pragma mark - 导入/导出
@@ -754,20 +794,22 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     NSArray *arr = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     if (![arr isKindOfClass:[NSArray class]]) { [self toast:@"配置格式错误"]; return; }
     NSInteger count = 0;
+    NSUserDefaults *prefs = NTM_prefs();
     for (NSDictionary *d in arr) {
         NSString *aid = d[@"appId"];
         if (!aid.length) continue;
         id en = d[@"en"];
-        if (en) NTM_write(aid, @"en", [en boolValue]);
+        if (en) [prefs setBool:[en boolValue] forKey:NTM_key(aid, @"en")];
         NSDictionary *dims = d[@"dims"];
         if ([dims isKindOfClass:[NSDictionary class]]) {
             for (NSString *k in dims) {
-                NTM_write(aid, k, [dims[k] boolValue]);
+                [prefs setBool:[dims[k] boolValue] forKey:NTM_key(aid, k)];
             }
         }
         NTM_syncSystemAsync(aid);
         count++;
     }
+    dispatch_async(NTM_syncQueue(), ^{ [prefs synchronize]; });
     [self refreshAllCards];
     [self refreshStat];
     [self toast:[NSString stringWithFormat:@"已导入 %ld 个应用", (long)count]];

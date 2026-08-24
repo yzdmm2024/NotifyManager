@@ -43,6 +43,9 @@ static void NTM_write(NSString *appId, NSString *dim, BOOL val) {
 
 #pragma mark - 同步到系统通知设置 (BBSettingsGateway)
 // 让"设置 → 通知"里的系统设置跟随本面板的开关，双向一致
+// 注意：BBSectionInfo 没有 soundEnabled/badgeEnabled 属性，声音/角标必须通过
+// pushSettings 位掩码控制（bit0/3=角标, bit1/4=声音, bit2/5=横幅提醒）。
+// 若用 KVC 设置不存在的 key 会抛异常，导致 setSectionInfo:forSectionID: 永不执行。
 static void NTM_syncSystem(NSString *appId) {
     if (!appId.length) return;
     @try {
@@ -57,8 +60,11 @@ static void NTM_syncSystem(NSString *appId) {
         [info setValue:@(NTM_read(appId, @"lock")) forKey:@"showsInLockScreen"];
         [info setValue:@(NTM_read(appId, @"nc")) forKey:@"showsInNotificationCenter"];
         [info setValue:@(NTM_read(appId, @"banner") ? 1 : 0) forKey:@"alertType"];
-        [info setValue:@(NTM_read(appId, @"sound")) forKey:@"soundEnabled"];
-        [info setValue:@(NTM_read(appId, @"badge")) forKey:@"badgeEnabled"];
+        NSUInteger push = 0;
+        if (NTM_read(appId, @"sound"))  push |= 18; // bit1+bit4 声音
+        if (NTM_read(appId, @"badge"))  push |= 9;  // bit0+bit3 角标
+        if (NTM_read(appId, @"banner")) push |= 36; // bit2+bit5 横幅提醒
+        [info setValue:@(push) forKey:@"pushSettings"];
         SEL setSel = NSSelectorFromString(@"setSectionInfo:forSectionID:");
         if ([gateway respondsToSelector:setSel]) {
             [gateway performSelector:setSel withObject:info withObject:appId];
@@ -609,7 +615,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     _batchSeg.selectedSegmentIndex = 2;
 }
 
-// 批量写入：一次 synchronize；系统同步放到后台，避免阻塞 UI
+// 批量写入：一次 synchronize；系统同步放到后台串行队列，避免阻塞 UI 且防止交错
 - (void)batchWrite:(BOOL)val {
     NSUserDefaults *prefs = [[NSUserDefaults alloc] initWithSuiteName:NTM_suite];
     NSMutableArray *ids = [NSMutableArray array];
@@ -621,7 +627,10 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     }
     [prefs synchronize];
     NSArray *idsCopy = [ids copy];
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    static dispatch_queue_t syncQ;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ syncQ = dispatch_queue_create("com.ntm.sync", DISPATCH_QUEUE_SERIAL); });
+    dispatch_async(syncQ, ^{
         for (NSString *aid in idsCopy) NTM_syncSystem(aid);
     });
 }

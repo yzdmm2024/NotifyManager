@@ -26,10 +26,17 @@ jobs:
       - name: Download SDK
         run: |
           mkdir -p $HOME/theos/sdks
-          curl -L -o /tmp/iPhoneOS16.5.sdk.zip \
-            "https://github.com/nicedayzhu/iosjailbreak_dev/releases/download/v1.0/iPhoneOS16.5.sdk.zip"
-          unzip -q -o /tmp/iPhoneOS16.5.sdk.zip -d $HOME/theos/sdks/
-          ls -la $HOME/theos/sdks/
+          # 尝试使用 Theos 官方 SDK 下载脚本
+          python3 $HOME/theos/vendor/ta/scripts/fetch_sdks.py --no-tco 2>/dev/null || true
+          # 如果还没有，下载 iPhoneOS 16.5 SDK
+          if [ ! -f "$HOME/theos/sdks/iPhoneOS16.5.sdk/SDKSettings.json" ]; then
+            curl -sL -o /tmp/sdk.zip \
+              "https://github.com/nicedayzhu/iosjailbreak_dev/releases/download/v1.0/iPhoneOS16.5.sdk.zip"
+            if [ -f /tmp/sdk.zip ] && [ -s /tmp/sdk.zip ]; then
+              unzip -q -o /tmp/sdk.zip -d $HOME/theos/sdks/ 2>/dev/null || true
+            fi
+          fi
+          ls -la $HOME/theos/sdks/ 2>/dev/null || echo "SDK dir empty"
 
       - name: Build
         run: |

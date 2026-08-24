@@ -36,19 +36,20 @@ clang -arch arm64 -isysroot "$SDK" -fobjc-arc -fobjc-exceptions \
       -framework UIKit -framework Foundation -framework CoreGraphics \
       -framework MobileCoreServices -framework QuartzCore \
       -framework UniformTypeIdentifiers \
-      -o "$APP_DIR/NotifyManagerIPA" \
+      -o "$BUILD_DIR/NTMApp" \
       "$BUILD_DIR"/main.o "$BUILD_DIR"/AppDelegate.o \
       "$BUILD_DIR"/StorageManager.o "$BUILD_DIR"/AppCardView.o \
       "$BUILD_DIR"/ViewController.o
 
 echo ">>> 验证可执行文件..."
-file "$APP_DIR/NotifyManagerIPA"
-otool -L "$APP_DIR/NotifyManagerIPA" | head -20
+file "$BUILD_DIR/NTMApp"
+otool -L "$BUILD_DIR/NTMApp" | head -20
 
 echo ">>> 编译完成"
 
 # 资源
 cp "$RES/Info.plist" "$APP_DIR/"
+cp "$BUILD_DIR/NTMApp" "$APP_DIR/NotifyManagerIPA"
 cp "$PROJECT_DIR/NotifyManager/NotifyManager@2x.png" "$APP_DIR/AppIcon.png" 2>/dev/null || \
   echo "Warning: No icon found, app will use default icon"
 

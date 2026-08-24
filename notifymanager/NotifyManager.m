@@ -46,30 +46,63 @@ static void NTM_write(NSString *appId, NSString *dim, BOOL val) {
 // 注意：BBSectionInfo 没有 soundEnabled/badgeEnabled 属性，声音/角标必须通过
 // pushSettings 位掩码控制（bit0/3=角标, bit1/4=声音, bit2/5=横幅提醒）。
 // 若用 KVC 设置不存在的 key 会抛异常，导致 setSectionInfo:forSectionID: 永不执行。
+// 常驻 gateway，避免每次创建/释放导致 setSectionInfo 持久化失败
+static id NTM_gateway(void) {
+    static id gw = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        Class cls = NSClassFromString(@"BBSettingsGateway");
+        if (cls) gw = [[cls alloc] init];
+    });
+    return gw;
+}
+
+// 所有系统同步统一走后台串行队列，避免阻塞 UI 且防止交错
+static dispatch_queue_t NTM_syncQueue(void) {
+    static dispatch_queue_t q;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ q = dispatch_queue_create("com.ntm.sync", DISPATCH_QUEUE_SERIAL); });
+    return q;
+}
+
 static void NTM_syncSystem(NSString *appId) {
     if (!appId.length) return;
     @try {
-        Class gwCls = NSClassFromString(@"BBSettingsGateway");
-        if (!gwCls) return;
-        id gateway = [[gwCls alloc] init];
+        id gateway = NTM_gateway();
         if (!gateway) return;
         id info = [gateway performSelector:@selector(sectionInfoForSectionID:) withObject:appId];
         if (!info) return;
         BOOL en = NTM_read(appId, @"en");
+        BOOL lock = NTM_read(appId, @"lock");
+        BOOL nc = NTM_read(appId, @"nc");
+        BOOL banner = NTM_read(appId, @"banner");
+        // 声音/标记仅在总开关开启且至少一个可见通道(锁屏/通知中心/横幅)开启时才生效
+        BOOL anyVisible = lock || nc || banner;
+        BOOL sound = en && anyVisible && NTM_read(appId, @"sound");
+        BOOL badge = en && anyVisible && NTM_read(appId, @"badge");
         [info setValue:@(en) forKey:@"allowsNotifications"];
-        [info setValue:@(NTM_read(appId, @"lock")) forKey:@"showsInLockScreen"];
-        [info setValue:@(NTM_read(appId, @"nc")) forKey:@"showsInNotificationCenter"];
-        [info setValue:@(NTM_read(appId, @"banner") ? 1 : 0) forKey:@"alertType"];
+        [info setValue:@(lock) forKey:@"showsInLockScreen"];
+        [info setValue:@(nc) forKey:@"showsInNotificationCenter"];
+        [info setValue:@(banner ? 1 : 0) forKey:@"alertType"];
         NSUInteger push = 0;
-        if (NTM_read(appId, @"sound"))  push |= 18; // bit1+bit4 声音
-        if (NTM_read(appId, @"badge"))  push |= 9;  // bit0+bit3 角标
-        if (NTM_read(appId, @"banner")) push |= 36; // bit2+bit5 横幅提醒
+        if (sound) push |= 18;  // bit1+bit4 声音
+        if (badge) push |= 9;   // bit0+bit3 角标
+        if (banner) push |= 36; // bit2+bit5 横幅提醒
         [info setValue:@(push) forKey:@"pushSettings"];
         SEL setSel = NSSelectorFromString(@"setSectionInfo:forSectionID:");
         if ([gateway respondsToSelector:setSel]) {
             [gateway performSelector:setSel withObject:info withObject:appId];
         }
-    } @catch(NSException *e) {}
+        NSLog(@"[NTM] sync %@ en=%d lock=%d nc=%d banner=%d sound=%d badge=%d push=%lu",
+              appId, en, lock, nc, banner, sound, badge, (unsigned long)push);
+    } @catch(NSException *e) {
+        NSLog(@"[NTM] sync %@ exception %@", appId, e);
+    }
+}
+
+static void NTM_syncSystemAsync(NSString *appId) {
+    if (!appId.length) return;
+    dispatch_async(NTM_syncQueue(), ^{ NTM_syncSystem(appId); });
 }
 
 #pragma mark - 维度定义
@@ -309,7 +342,7 @@ static NSArray *NTM_allApps(void) {
     // 联动：总开关切换时同步所有子开关
     for (NSDictionary *d in NTM_dims()) NTM_write(_appId, d[@"key"], sender.on);
     [self reloadFromPrefs];
-    NTM_syncSystem(_appId);
+    NTM_syncSystemAsync(_appId);
     if (_onMasterChange) _onMasterChange(_appId, sender.on);
 }
 
@@ -319,7 +352,9 @@ static NSArray *NTM_allApps(void) {
     NSDictionary *d = NTM_dims()[idx];
     NTM_write(_appId, d[@"key"], sender.on);
     // 各子开关独立控制，互不联动；总开关仅由总开关本身控制
-    NTM_syncSystem(_appId);
+    // 刷新后按依赖规则更新声音/标记的可用状态
+    [self reloadFromPrefs];
+    NTM_syncSystemAsync(_appId);
     if (_onDimChange) _onDimChange(_appId, d[@"key"], sender.on);
 }
 
@@ -327,15 +362,23 @@ static NSArray *NTM_allApps(void) {
     NTM_write(_appId, @"en", YES);
     for (NSDictionary *d in NTM_dims()) NTM_write(_appId, d[@"key"], YES);
     [self reloadFromPrefs];
-    NTM_syncSystem(_appId);
+    NTM_syncSystemAsync(_appId);
     if (_onReset) _onReset(_appId);
 }
 
 - (void)reloadFromPrefs {
-    _masterSwitch.on = NTM_read(_appId, @"en");
+    BOOL en = NTM_read(_appId, @"en");
+    _masterSwitch.on = en;
     NSArray *dims = NTM_dims();
+    // 声音/标记依赖：总开关开启 且 锁屏/通知中心/横幅至少一个开启 才可点
+    BOOL anyVisible = NTM_read(_appId, @"lock") || NTM_read(_appId, @"nc") || NTM_read(_appId, @"banner");
+    BOOL soundBadgeEnabled = en && anyVisible;
     for (NSUInteger i = 0; i < dims.count && i < _dimSwitches.count; i++) {
-        ((UISwitch *)_dimSwitches[i]).on = NTM_read(_appId, dims[i][@"key"]);
+        UISwitch *sw = _dimSwitches[i];
+        sw.on = NTM_read(_appId, dims[i][@"key"]);
+        if (i == 3 || i == 4) { // 声音/标记
+            sw.enabled = soundBadgeEnabled;
+        }
     }
 }
 
@@ -344,7 +387,6 @@ static NSArray *NTM_allApps(void) {
 #pragma mark - 控制器
 @implementation NTMPrincipalController {
     UISegmentedControl *_catSeg;
-    UISegmentedControl *_batchSeg;
     UISearchBar *_searchBar;
     UILabel *_statLabel;
     UITableView *_tableView;
@@ -408,9 +450,26 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     _catSeg.selectedSegmentIndex = 0;
     [_catSeg addTarget:self action:@selector(catChanged) forControlEvents:UIControlEventValueChanged];
 
-    _batchSeg = [[UISegmentedControl alloc] initWithItems:@[@"全部开启", @"全部关闭", @"自定义"]];
-    _batchSeg.selectedSegmentIndex = 2;
-    [_batchSeg addTarget:self action:@selector(batchChanged) forControlEvents:UIControlEventValueChanged];
+    // 批量操作按钮：全部开启 / 全部关闭 / 自定义(恢复快照)
+    UIButton *allOnBtn = NTM_pillButton(@"全部开启",
+        [UIColor colorWithRed:0.45 green:0.78 blue:0.54 alpha:0.18],
+        [UIColor colorWithRed:0.13 green:0.55 blue:0.24 alpha:1]);
+    [allOnBtn addTarget:self action:@selector(allOnTapped) forControlEvents:UIControlEventTouchUpInside];
+
+    UIButton *allOffBtn = NTM_pillButton(@"全部关闭",
+        [UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:0.15],
+        [UIColor colorWithRed:0.72 green:0.17 blue:0.17 alpha:1]);
+    [allOffBtn addTarget:self action:@selector(allOffTapped) forControlEvents:UIControlEventTouchUpInside];
+
+    UIButton *customBtn = NTM_pillButton(@"自定义",
+        [UIColor colorWithRed:0.55 green:0.58 blue:0.65 alpha:0.18],
+        [UIColor colorWithWhite:0.35 alpha:1]);
+    [customBtn addTarget:self action:@selector(customTapped) forControlEvents:UIControlEventTouchUpInside];
+
+    UIStackView *batchRow = [[UIStackView alloc] initWithArrangedSubviews:@[allOnBtn, allOffBtn, customBtn]];
+    batchRow.axis = UILayoutConstraintAxisHorizontal;
+    batchRow.distribution = UIStackViewDistributionFillEqually;
+    batchRow.spacing = 10;
 
     _searchBar = [[UISearchBar alloc] init];
     _searchBar.placeholder = @"搜索应用名称";
@@ -441,17 +500,20 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [UIColor colorWithRed:0.13 green:0.55 blue:0.24 alpha:1]);
     [importBtn addTarget:self action:@selector(importConfig) forControlEvents:UIControlEventTouchUpInside];
 
-    for (UIView *v in @[_batchSeg, _statLabel, _searchBar, _catSeg, _tableView, exportBtn, importBtn]) {
+    // 表格先加入(置于最底层)，其余控件在其上层，避免任何控件被表格遮挡导致无法点击
+    for (UIView *v in @[_tableView, batchRow, _statLabel, _searchBar, _catSeg, exportBtn, importBtn]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [self.view addSubview:v];
     }
+    [self.view bringSubviewToFront:batchRow];
 
     [NSLayoutConstraint activateConstraints:@[
-        [_batchSeg.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
-        [_batchSeg.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
-        [_batchSeg.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
+        [batchRow.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
+        [batchRow.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
+        [batchRow.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
+        [batchRow.heightAnchor constraintEqualToConstant:40],
 
-        [_statLabel.topAnchor constraintEqualToAnchor:_batchSeg.bottomAnchor constant:8],
+        [_statLabel.topAnchor constraintEqualToAnchor:batchRow.bottomAnchor constant:8],
         [_statLabel.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:20],
         [_statLabel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-20],
 
@@ -579,31 +641,30 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
 - (void)catChanged {
     NSArray *cats = @[@"用户应用", @"巨魔应用", @"系统应用"];
     _curCat = cats[_catSeg.selectedSegmentIndex];
-    _batchSeg.selectedSegmentIndex = 2;
     [self reloadList];
 }
 
-- (void)batchChanged {
-    NSInteger idx = _batchSeg.selectedSegmentIndex;
-    if (idx == 0) {
-        [self saveSnapshot];
-        [self batchWrite:YES];
-        [self refreshAllCards];
-        [self refreshStat];
-        [self toast:@"已全部开启"];
-    } else if (idx == 1) {
-        [self saveSnapshot];
-        [self batchWrite:NO];
-        [self refreshAllCards];
-        [self refreshStat];
-        [self toast:@"已全部关闭"];
-    } else {
-        [self restoreSnapshot];
-        [self refreshAllCards];
-        [self refreshStat];
-        [self toast:@"已恢复自定义设置"];
-    }
-    _batchSeg.selectedSegmentIndex = 2;
+- (void)allOnTapped {
+    [self saveSnapshot];
+    [self batchWrite:YES];
+    [self refreshAllCards];
+    [self refreshStat];
+    [self toast:@"已全部开启"];
+}
+
+- (void)allOffTapped {
+    [self saveSnapshot];
+    [self batchWrite:NO];
+    [self refreshAllCards];
+    [self refreshStat];
+    [self toast:@"已全部关闭"];
+}
+
+- (void)customTapped {
+    [self restoreSnapshot];
+    [self refreshAllCards];
+    [self refreshStat];
+    [self toast:@"已恢复自定义设置"];
 }
 
 // 批量写入：一次 synchronize；系统同步放到后台串行队列，避免阻塞 UI 且防止交错
@@ -618,10 +679,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     }
     [prefs synchronize];
     NSArray *idsCopy = [ids copy];
-    static dispatch_queue_t syncQ;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ syncQ = dispatch_queue_create("com.ntm.sync", DISPATCH_QUEUE_SERIAL); });
-    dispatch_async(syncQ, ^{
+    dispatch_async(NTM_syncQueue(), ^{
         for (NSString *aid in idsCopy) NTM_syncSystem(aid);
     });
 }
@@ -646,7 +704,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
             id v = d[dim[@"key"]];
             if (v) NTM_write(aid, dim[@"key"], [v boolValue]);
         }
-        NTM_syncSystem(aid);
+        NTM_syncSystemAsync(aid);
     }
 }
 
@@ -707,7 +765,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
                 NTM_write(aid, k, [dims[k] boolValue]);
             }
         }
-        NTM_syncSystem(aid);
+        NTM_syncSystemAsync(aid);
         count++;
     }
     [self refreshAllCards];

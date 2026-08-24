@@ -1,9 +1,16 @@
 #import "CarCheckFloatingView.h"
 
-%ctor {
-    // 延迟初始化浮窗，等待 UI 就绪
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        [CarCheckFloatingView sharedView];
+%hook UIApplication
+
+- (void)applicationDidBecomeActive:(id)application {
+    %orig;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        // App 完全就绪后才创建浮窗，避免卡死
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [CarCheckFloatingView sharedView];
+        });
     });
 }
+
+%end

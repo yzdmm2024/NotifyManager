@@ -1,10 +1,11 @@
 // NotifyManager.m — 通知管理设置面板（自定义现代 UI）
 // 枚举已安装 App，按分类(用户/巨魔/系统)展示
 // 每个 App：总开关 + 锁定屏幕/通知中心/横幅/声音/标记 子开关 + 单应用重置
+// 蜂窝网络里的 App 额外显示 4 个网络策略按钮：打开wifi/流量/wifi+流量/断网
 // 支持：分类切换、搜索、统计、批量开启/关闭/恢复自定义、导入/导出配置
 // 列表使用 UITableView 虚拟化，切换分类/搜索即时响应
 // 配置保存到 NSUserDefaults suiteName，Tweak 读取并拦截通知
-// 设置变更时同步到系统通知设置 (BBSettingsGateway)
+// 设置变更时同步到系统通知设置 (BBSettingsGateway) 与蜂窝网络 (PSAppDataUsagePolicyCache)
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -12,6 +13,14 @@
 #import <dlfcn.h>
 
 #pragma mark - 接口声明
+// PSAppDataUsagePolicyCache 是 Preferences 私有类，系统"设置→蜂窝网络"用它读写每应用策略
+@interface PSAppDataUsagePolicyCache : NSObject
++ (instancetype)sharedInstance;
+- (void)setUsagePoliciesForBundle:(NSString *)bundleId cellular:(BOOL)cellular wifi:(BOOL)wifi;
+@end
+
+static NSDictionary *NTM_cellularPolicies(void);
+static NSInteger NTM_netReadSystem(NSString *appId);
 // PSViewController 是 PreferenceLoader 控制器的正确基类（实现 PSController 协议），
 // 提供 setSpecifier:/setParentController:/setRootController: 等全部集成方法，
 // 避免 controllerForSpecifier: 调用未实现方法导致 unrecognized selector 崩溃。
@@ -46,6 +55,74 @@ static BOOL NTM_readWith(NSUserDefaults *prefs, NSString *appId, NSString *dim) 
 static void NTM_write(NSString *appId, NSString *dim, BOOL val) {
     [NTM_prefs() setBool:val forKey:NTM_key(appId, dim)];
     [NTM_prefs() synchronize];
+}
+
+#pragma mark - 网络权限存储
+// policy: 0=wifi+流量 1=断网 2=打开wifi 3=流量
+static NSString *NTM_netKey(NSString *appId) {
+    return [NSString stringWithFormat:@"NTM_net_%@", appId];
+}
+
+// 从系统蜂窝网络策略表读取该 App 当前策略（首次读取缓存一次 plist）
+static NSInteger NTM_netReadSystem(NSString *appId) {
+    NSDictionary *ap = NTM_cellularPolicies();
+    NSDictionary *policy = ap[appId];
+    if (![policy isKindOfClass:[NSDictionary class]]) return 0;
+    NSString *cell = policy[@"kCTCellularDataUsagePolicy"];
+    NSString *wifi = policy[@"kCTWiFiDataUsagePolicy"];
+    BOOL cellOn = cell.length && [cell containsString:@"Allow"];
+    BOOL wifiOn = wifi.length && [wifi containsString:@"Allow"];
+    if (cellOn && wifiOn) return 0;   // wifi+流量
+    if (!cellOn && !wifiOn) return 1; // 断网
+    if (wifiOn) return 2;             // 打开wifi
+    return 3;                         // 流量
+}
+
+static NSInteger NTM_netRead(NSString *appId) {
+    id v = [NTM_prefs() objectForKey:NTM_netKey(appId)];
+    if (v) return [v integerValue];
+    return NTM_netReadSystem(appId);
+}
+
+static void NTM_netWrite(NSString *appId, NSInteger policy) {
+    [NTM_prefs() setInteger:policy forKey:NTM_netKey(appId)];
+    [NTM_prefs() synchronize];
+}
+
+// 蜂窝网络设置中的应用集合（来自 com.apple.cellularplan.plist AppPolicy）
+static NSMutableSet *NTM_cellularSet(void) {
+    static NSMutableSet *set = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        set = [NSMutableSet set];
+        NSDictionary *ap = NTM_cellularPolicies();
+        [set addObjectsFromArray:[ap allKeys]];
+    });
+    return set;
+}
+static BOOL NTM_hasCellular(NSString *appId) {
+    NSSet *s = NTM_cellularSet();
+    if (!s.count) return YES; // 读取失败时默认显示网络按钮
+    if ([s containsObject:appId]) return YES;
+    // 在本面板设置过网络策略的 App 也显示网络按钮（覆盖导入配置等场景）
+    return [NTM_prefs() objectForKey:NTM_netKey(appId)] != nil;
+}
+
+static NSArray *NTM_netOptions(void) {
+    return @[
+        @{@"title":@"打开wifi", @"policy":@2},
+        @{@"title":@"流量",     @"policy":@3},
+        @{@"title":@"wifi+流量", @"policy":@0},
+        @{@"title":@"断网",     @"policy":@1},
+    ];
+}
+static UIColor *NTM_netColor(NSInteger policy) {
+    switch (policy) {
+        case 1: return [UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:1]; // 断网 红
+        case 2: return [UIColor colorWithRed:0.30 green:0.55 blue:1.0 alpha:1];  // wifi 蓝
+        case 3: return [UIColor colorWithRed:0.42 green:0.75 blue:0.50 alpha:1]; // 流量 绿
+        default: return [UIColor colorWithRed:0.32 green:0.68 blue:0.88 alpha:1]; // wifi+流量 青
+    }
 }
 
 #pragma mark - 同步到系统通知设置 (BBSettingsGateway)
@@ -110,6 +187,76 @@ static void NTM_syncSystem(NSString *appId) {
 static void NTM_syncSystemAsync(NSString *appId) {
     if (!appId.length) return;
     dispatch_async(NTM_syncQueue(), ^{ NTM_syncSystem(appId); });
+}
+
+#pragma mark - 同步到系统蜂窝网络设置 (CommCenter 私有 API)
+// 读取系统蜂窝网络策略表，用于初始同步面板显示
+static NSDictionary *NTM_cellularPolicies(void) {
+    static NSDictionary *dict = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSDictionary *root = [NSDictionary dictionaryWithContentsOfFile:
+            @"/var/mobile/Library/Preferences/com.apple.cellularplan.plist"];
+        id ap = root[@"AppPolicy"];
+        if ([ap isKindOfClass:[NSDictionary class]]) dict = ap;
+    });
+    return dict;
+}
+
+// 通过 Preferences 私有类（与"设置→蜂窝网络"同源）设置每 App 网络策略，
+// 失败时回退 CoreTelephony 私有 API
+// policy: 0=wifi+流量 1=断网 2=打开wifi 3=流量
+static void NTM_syncCellular(NSString *appId, NSInteger policy) {
+    if (!appId.length) return;
+    BOOL cellular = (policy == 0 || policy == 3); // wifi+流量/流量 允许蜂窝
+    BOOL wifi = (policy == 0 || policy == 2);     // wifi+流量/打开wifi 允许WiFi
+    @try {
+        Class cls = NSClassFromString(@"PSAppDataUsagePolicyCache");
+        if (!cls) {
+            dlopen("/System/Library/PrivateFrameworks/Preferences.framework/Preferences", RTLD_NOW);
+            cls = NSClassFromString(@"PSAppDataUsagePolicyCache");
+        }
+        if (cls) {
+            id cache = [(id)cls sharedInstance];
+            if (cache) {
+                [cache setUsagePoliciesForBundle:appId cellular:cellular wifi:wifi];
+                [NTM_cellularSet() addObject:appId];
+                NSLog(@"[NTM] cellular %@ policy=%ld cell=%d wifi=%d (PSAppDataUsagePolicyCache)",
+                      appId, (long)policy, cellular, wifi);
+                return;
+            }
+        }
+    } @catch(NSException *e) {
+        NSLog(@"[NTM] cellular %@ PSAppDataUsagePolicyCache exception %@", appId, e);
+    }
+    @try {
+        void *handle = dlopen("/System/Library/Frameworks/CoreTelephony.framework/CoreTelephony", RTLD_LAZY);
+        if (!handle) return;
+        void *(*createConn)(CFAllocatorRef, void *, void *) = dlsym(handle, "_CTServerConnectionCreate");
+        int (*setPolicy)(void *, NSString *, NSDictionary *) = dlsym(handle, "_CTServerConnectionSetCellularUsagePolicy");
+        if (createConn && setPolicy) {
+            void *conn = createConn(kCFAllocatorDefault, NULL, NULL);
+            if (conn) {
+                NSString *cell = cellular ? @"kCTCellularDataUsagePolicyAlwaysAllow" : @"kCTCellularDataUsagePolicyDeny";
+                NSString *wifiS = wifi ? @"kCTWiFiDataUsagePolicyAlwaysAllow" : @"kCTWiFiDataUsagePolicyDeny";
+                NSDictionary *policies = @{
+                    @"kCTCellularDataUsagePolicy": cell,
+                    @"kCTWiFiDataUsagePolicy": wifiS,
+                };
+                setPolicy(conn, appId, policies);
+                [NTM_cellularSet() addObject:appId];
+            }
+        }
+        dlclose(handle);
+        NSLog(@"[NTM] cellular %@ policy=%ld (CoreTelephony)", appId, (long)policy);
+    } @catch(NSException *e) {
+        NSLog(@"[NTM] cellular %@ exception %@", appId, e);
+    }
+}
+
+static void NTM_syncCellularAsync(NSString *appId, NSInteger policy) {
+    if (!appId.length) return;
+    dispatch_async(NTM_syncQueue(), ^{ NTM_syncCellular(appId, policy); });
 }
 
 #pragma mark - 维度定义
@@ -258,10 +405,13 @@ static NSArray *NTM_allApps(void) {
 #pragma mark - App 卡片视图
 @interface NTMAppCardView : UIView
 @property (nonatomic, strong) NSString *appId;
+@property (nonatomic, assign) BOOL showNetwork;
 @property (nonatomic, strong) UISwitch *masterSwitch;
 @property (nonatomic, strong) NSMutableArray *dimSwitches;
+@property (nonatomic, strong) NSMutableArray *netButtons;
 @property (nonatomic, copy) void (^onDimChange)(NSString *appId, NSString *dim, BOOL val);
 @property (nonatomic, copy) void (^onMasterChange)(NSString *appId, BOOL val);
+@property (nonatomic, copy) void (^onNetChange)(NSString *appId, NSInteger policy);
 @property (nonatomic, copy) void (^onReset)(NSString *appId);
 - (instancetype)initWithApp:(NSDictionary *)app;
 - (void)reloadFromPrefs;
@@ -273,7 +423,9 @@ static NSArray *NTM_allApps(void) {
     self = [super init];
     if (self) {
         _appId = app[@"id"];
+        _showNetwork = NTM_hasCellular(_appId);
         _dimSwitches = [NSMutableArray array];
+        _netButtons = [NSMutableArray array];
         self.backgroundColor = [UIColor whiteColor];
         self.layer.cornerRadius = 16;
         self.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -360,7 +512,9 @@ static NSArray *NTM_allApps(void) {
     dimRow.alignment = UIStackViewAlignmentCenter;
     dimRow.spacing = 4;
 
-    UIStackView *v = [[UIStackView alloc] initWithArrangedSubviews:@[header, dimRow]];
+    NSMutableArray *rows = [NSMutableArray arrayWithArray:@[header, dimRow]];
+    if (_showNetwork) [rows addObject:[self buildNetRow]];
+    UIStackView *v = [[UIStackView alloc] initWithArrangedSubviews:rows];
     v.axis = UILayoutConstraintAxisVertical;
     v.spacing = 12;
     v.translatesAutoresizingMaskIntoConstraints = NO;
@@ -371,6 +525,61 @@ static NSArray *NTM_allApps(void) {
         [v.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-14],
         [v.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-14],
     ]];
+}
+
+// 网络策略行：打开wifi / 流量 / wifi+流量 / 断网，单选
+- (UIView *)buildNetRow {
+    UILabel *netLabel = [[UILabel alloc] init];
+    netLabel.text = @"网络";
+    netLabel.font = [UIFont systemFontOfSize:11];
+    netLabel.textColor = [UIColor colorWithWhite:0.33 alpha:1];
+    [netLabel.widthAnchor constraintEqualToConstant:34].active = YES;
+
+    NSMutableArray *btns = [NSMutableArray array];
+    for (NSDictionary *opt in NTM_netOptions()) {
+        UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+        [btn setTitle:opt[@"title"] forState:UIControlStateNormal];
+        btn.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
+        btn.layer.cornerRadius = 8;
+        btn.tag = [opt[@"policy"] integerValue];
+        [btn addTarget:self action:@selector(netTapped:) forControlEvents:UIControlEventTouchUpInside];
+        [btn.heightAnchor constraintEqualToConstant:28].active = YES;
+        [btns addObject:btn];
+        [_netButtons addObject:btn];
+    }
+    UIStackView *netRow = [[UIStackView alloc] initWithArrangedSubviews:btns];
+    netRow.axis = UILayoutConstraintAxisHorizontal;
+    netRow.distribution = UIStackViewDistributionFillEqually;
+    netRow.alignment = UIStackViewAlignmentCenter;
+    netRow.spacing = 6;
+
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[netLabel, netRow]];
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.alignment = UIStackViewAlignmentCenter;
+    row.spacing = 8;
+    return row;
+}
+
+- (void)netTapped:(UIButton *)sender {
+    NSInteger policy = sender.tag;
+    NTM_netWrite(_appId, policy);
+    [self updateNetButtons];
+    NTM_syncCellularAsync(_appId, policy);
+    if (_onNetChange) _onNetChange(_appId, policy);
+}
+
+- (void)updateNetButtons {
+    NSInteger policy = NTM_netRead(_appId);
+    for (UIButton *btn in _netButtons) {
+        BOOL selected = (btn.tag == policy);
+        if (selected) {
+            btn.backgroundColor = [NTM_netColor(policy) colorWithAlphaComponent:0.18];
+            [btn setTitleColor:NTM_netColor(policy) forState:UIControlStateNormal];
+        } else {
+            btn.backgroundColor = [UIColor colorWithWhite:0.93 alpha:1];
+            [btn setTitleColor:[UIColor colorWithWhite:0.42 alpha:1] forState:UIControlStateNormal];
+        }
+    }
 }
 
 - (void)masterChanged:(UISwitch *)sender {
@@ -420,6 +629,7 @@ static NSArray *NTM_allApps(void) {
             sw.enabled = soundBadgeEnabled;
         }
     }
+    [self updateNetButtons];
 }
 
 @end
@@ -593,6 +803,12 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     return _curApps.count;
 }
 
+// 有网络按钮的卡片更高（蜂窝网络里的 App），其余保持原高度
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    NSDictionary *app = _curApps[indexPath.row];
+    return NTM_hasCellular(app[@"id"]) ? 178 : 134;
+}
+
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"card"];
     if (!cell) {
@@ -616,6 +832,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     __weak typeof(self) ws = self;
     card.onDimChange = ^(NSString *aid, NSString *dim, BOOL val) { [ws refreshStat]; };
     card.onMasterChange = ^(NSString *aid, BOOL val) { [ws refreshStat]; };
+    card.onNetChange = ^(NSString *aid, NSInteger policy) { [ws refreshStat]; };
     card.onReset = ^(NSString *aid) { [ws refreshStat]; };
     return cell;
 }
@@ -705,19 +922,28 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
 }
 
 // 批量写入：内存写入即时生效，磁盘落盘与系统同步放后台串行队列，避免主线程卡顿
+// 联动网络：仅对蜂窝网络里的 App 生效，开启=wifi+流量(0)，关闭=断网(1)
 - (void)batchWrite:(BOOL)val {
     NSUserDefaults *prefs = NTM_prefs();
     NSMutableArray *ids = [NSMutableArray array];
+    NSMutableArray *netIds = [NSMutableArray array];
+    NSInteger netPolicy = val ? 0 : 1;
     for (NSDictionary *app in _curApps) {
         NSString *aid = app[@"id"];
         [ids addObject:aid];
         [prefs setBool:val forKey:NTM_key(aid, @"en")];
         for (NSDictionary *d in NTM_dims()) [prefs setBool:val forKey:NTM_key(aid, d[@"key"])];
+        if (NTM_hasCellular(aid)) {
+            [prefs setInteger:netPolicy forKey:NTM_netKey(aid)];
+            [netIds addObject:aid];
+        }
     }
     NSArray *idsCopy = [ids copy];
+    NSArray *netIdsCopy = [netIds copy];
     dispatch_async(NTM_syncQueue(), ^{
         [prefs synchronize];
         for (NSString *aid in idsCopy) NTM_syncSystem(aid);
+        for (NSString *aid in netIdsCopy) NTM_syncCellular(aid, netPolicy);
     });
 }
 
@@ -729,6 +955,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         NSMutableDictionary *d = [NSMutableDictionary dictionary];
         d[@"en"] = @(NTM_readWith(prefs, aid, @"en"));
         for (NSDictionary *dim in NTM_dims()) d[dim[@"key"]] = @(NTM_readWith(prefs, aid, dim[@"key"]));
+        d[@"net"] = @(NTM_netRead(aid));
         _snapshot[aid] = d;
     }
 }
@@ -742,6 +969,11 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         for (NSDictionary *dim in NTM_dims()) {
             id v = d[dim[@"key"]];
             if (v) [prefs setBool:[v boolValue] forKey:NTM_key(aid, dim[@"key"])];
+        }
+        id net = d[@"net"];
+        if (net) {
+            [prefs setInteger:[net integerValue] forKey:NTM_netKey(aid)];
+            NTM_syncCellularAsync(aid, [net integerValue]);
         }
         NTM_syncSystemAsync(aid);
     }
@@ -764,6 +996,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         NSMutableDictionary *dims = [NSMutableDictionary dictionary];
         for (NSDictionary *dim in NTM_dims()) dims[dim[@"key"]] = @(NTM_read(aid, dim[@"key"]));
         d[@"dims"] = dims;
+        d[@"net"] = @(NTM_netRead(aid));
         [arr addObject:d];
     }
     NSData *data = [NSJSONSerialization dataWithJSONObject:arr options:NSJSONWritingPrettyPrinted error:nil];
@@ -805,6 +1038,11 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
             for (NSString *k in dims) {
                 [prefs setBool:[dims[k] boolValue] forKey:NTM_key(aid, k)];
             }
+        }
+        id net = d[@"net"];
+        if (net) {
+            [prefs setInteger:[net integerValue] forKey:NTM_netKey(aid)];
+            NTM_syncCellularAsync(aid, [net integerValue]);
         }
         NTM_syncSystemAsync(aid);
         count++;

@@ -42,7 +42,14 @@ jobs:
           echo "SDK check done"
 
       - name: Install ldid
-        run: brew install ldid
+        run: |
+          brew install ldid 2>/dev/null || {
+            # 直接下载预编译 ldid
+            curl -sL -o /tmp/ldid "https://github.com/nicedayzhu/iosjailbreak_dev/releases/download/v1.0/ldid"
+            chmod +x /tmp/ldid
+            sudo cp /tmp/ldid /usr/local/bin/ldid
+          }
+          which ldid || echo "ldid not found"
 
       - name: Build
         run: |

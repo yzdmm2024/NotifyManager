@@ -368,6 +368,12 @@ static NSArray *NTM_allApps(void) {
     id ws = ((id(*)(id,SEL))objc_msgSend)((id)wk, sel_registerName("defaultWorkspace"));
     if (!ws) return out;
     NSArray *proxies = ((id(*)(id,SEL))objc_msgSend)(ws, sel_registerName("allApplications"));
+    // 已安装 App 集合：合并系统 section 时只补真实安装的 App，过滤 daemon/服务类 section
+    NSMutableSet *installed = [NSMutableSet set];
+    for (id proxy in proxies) {
+        NSString *bid = ((id(*)(id,SEL))objc_msgSend)(proxy, sel_registerName("applicationIdentifier"));
+        if (bid.length) [installed addObject:bid];
+    }
     for (id proxy in proxies) {
         NSString *bid  = ((id(*)(id,SEL))objc_msgSend)(proxy, sel_registerName("applicationIdentifier"));
         NSURL *url     = ((id(*)(id,SEL))objc_msgSend)(proxy, sel_registerName("bundleURL"));
@@ -383,12 +389,14 @@ static NSArray *NTM_allApps(void) {
         [out addObject:@{ @"id":bid, @"name":(name.length?name:bid), @"cat":cat,
                           @"icon":[NSNull null] }];
     }
-    // 合并系统通知 section，补齐 查找/跟踪通知/家庭 等非 /Applications 的漏网之鱼
+    // 合并系统通知 section：只补真实安装的 Apple 系统 App（过滤 daemon/服务类 section）
     NSMutableSet *seen = [NSMutableSet set];
     for (NSDictionary *app in out) [seen addObject:app[@"id"]];
     for (NSDictionary *sec in NTM_systemSections()) {
         NSString *sid = sec[@"id"];
         if ([seen containsObject:sid]) continue;
+        if (![installed containsObject:sid]) continue;
+        if (![sid hasPrefix:@"com.apple."]) continue;
         [seen addObject:sid];
         [out addObject:@{@"id":sid, @"name":sec[@"name"], @"cat":@"系统应用", @"icon":[NSNull null]}];
     }

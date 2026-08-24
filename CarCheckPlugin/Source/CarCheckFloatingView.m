@@ -3,7 +3,7 @@
 
 @interface CarCheckFloatingView () <UITextFieldDelegate>
 // 悬浮按钮
-@property (nonatomic, strong) UIButton *floatBtn;
+@property (nonatomic, strong) UIView *floatBtn;
 @property (nonatomic, assign) BOOL isDraggingBtn;
 @property (nonatomic, assign) CGPoint btnDragStart;
 // 面板

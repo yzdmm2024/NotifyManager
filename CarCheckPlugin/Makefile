@@ -1,4 +1,4 @@
-export TARGET := iphone:clang:16.5:14.0
+export TARGET := iphone:clang:latest:14.0
 export ARCHS = arm64 arm64e
 
 INSTALL_TARGET_PROCESSES = SpringBoard
@@ -12,7 +12,3 @@ CarCheckPlugin_CFLAGS = -fobjc-arc
 CarCheckPlugin_FRAMEWORKS = UIKit Foundation QuartzCore
 
 include $(THEOS_MAKE_PATH)/tweak.mk
-
-after-stage::
-	$(ECHO_NOTHING)mkdir -p $(THEOS_STAGING_DIR)/Library/MobileSubstrate/DynamicLibraries$(ECHO_END)
-	$(ECHO_NOTHING)cp Source/VehicleDatabase.h $(THEOS_STAGING_DIR)/Library/MobileSubstrate/DynamicLibraries/$(ECHO_END)

@@ -2,13 +2,22 @@
 #import "VehicleDatabase.h"
 
 @interface CarCheckFloatingView () <UITextFieldDelegate>
+// 悬浮按钮
+@property (nonatomic, strong) UIButton *floatBtn;
+@property (nonatomic, assign) BOOL isDraggingBtn;
+@property (nonatomic, assign) CGPoint btnDragStart;
+// 面板
+@property (nonatomic, strong) UIView *bgMask;
 @property (nonatomic, strong) UIView *panel;
 @property (nonatomic, strong) UITextField *inputField;
 @property (nonatomic, strong) UILabel *resultLabel;
 @property (nonatomic, strong) UIButton *closeBtn;
-@property (nonatomic, strong) UIButton *dragBtn;
-@property (nonatomic, assign) CGPoint dragStart;
-@property (nonatomic, assign) CGPoint panelOrigin;
+@property (nonatomic, assign) BOOL panelVisible;
+@property (nonatomic, assign) CGFloat panelScale;
+// 面板拖动
+@property (nonatomic, assign) CGPoint panelDragOffset;
+// 面板缩放
+@property (nonatomic, assign) CGFloat lastPinchScale;
 @end
 
 @implementation CarCheckFloatingView
@@ -25,106 +34,229 @@ static CarCheckFloatingView *sShared = nil;
 
 - (instancetype)init {
     CGRect screen = [UIScreen mainScreen].bounds;
-    CGFloat w = 300, h = 220;
-    CGFloat x = (screen.size.width - w) / 2;
-    CGFloat y = 120;
     self = [super initWithFrame:screen];
     if (self) {
         self.windowLevel = UIWindowLevelAlert + 100;
-        self.hidden = YES;
+        self.hidden = NO;
         self.backgroundColor = [UIColor clearColor];
         self.userInteractionEnabled = YES;
+        self.panelScale = 1.0;
 
-        // 半透明背景遮罩
-        UIView *bg = [[UIView alloc] initWithFrame:screen];
-        bg.backgroundColor = [UIColor colorWithWhite:0 alpha:0.3];
-        bg.userInteractionEnabled = YES;
-        [bg addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleBgTap:)]];
-        [self addSubview:bg];
-
-        // 面板
-        _panel = [[UIView alloc] initWithFrame:CGRectMake(x, y, w, h)];
-        _panel.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.92];
-        _panel.layer.cornerRadius = 16;
-        _panel.layer.shadowColor = [UIColor blackColor].CGColor;
-        _panel.layer.shadowOffset = CGSizeMake(0, 4);
-        _panel.layer.shadowOpacity = 0.4;
-        _panel.layer.shadowRadius = 12;
-        _panel.clipsToBounds = NO;
-        _panel.userInteractionEnabled = YES;
-        [self addSubview:_panel];
-
-        // 拖动按钮（标题栏）
-        _dragBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-        _dragBtn.frame = CGRectMake(0, 0, w, 40);
-        _dragBtn.backgroundColor = [UIColor colorWithWhite:0.2 alpha:1];
-        _dragBtn.layer.cornerRadius = 16;
-        _dragBtn.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
-        _dragBtn.userInteractionEnabled = YES;
-        [_dragBtn setTitle:@"OpenPilot 车型查询" forState:UIControlStateNormal];
-        [_dragBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-        _dragBtn.titleLabel.font = [UIFont boldSystemFontOfSize:14];
-        [_dragBtn addTarget:self action:@selector(dragPan:) forControlEvents:UIControlEventTouchDragInside];
-        [_dragBtn addTarget:self action:@selector(dragPan:) forControlEvents:UIControlEventTouchDragOutside];
-        [_dragBtn addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePan:)]];
-        [_panel addSubview:_dragBtn];
-
-        // 关闭按钮
-        _closeBtn = [UIButton buttonWithType:UIButtonTypeCustom];
-        _closeBtn.frame = CGRectMake(w - 36, 4, 32, 32);
-        _closeBtn.backgroundColor = [UIColor colorWithWhite:0.3 alpha:1];
-        _closeBtn.layer.cornerRadius = 16;
-        [_closeBtn setTitle:@"✕" forState:UIControlStateNormal];
-        [_closeBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-        _closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:14];
-        [_closeBtn addTarget:self action:@selector(hide) forControlEvents:UIControlEventTouchUpInside];
-        [_panel addSubview:_closeBtn];
-
-        // 输入框
-        _inputField = [[UITextField alloc] initWithFrame:CGRectMake(16, 52, w - 32, 38)];
-        _inputField.backgroundColor = [UIColor colorWithWhite:0.25 alpha:1];
-        _inputField.textColor = [UIColor whiteColor];
-        _inputField.font = [UIFont systemFontOfSize:15];
-        _inputField.placeholder = @"输入车型，如: Civic 2022";
-        _inputField.attributedPlaceholder = [[NSAttributedString alloc] initWithString:@"输入车型，如: Civic 2022" attributes:@{NSForegroundColorAttributeName: [UIColor colorWithWhite:0.6 alpha:1]}];
-        _inputField.layer.cornerRadius = 8;
-        _inputField.leftView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 10, 0)];
-        _inputField.leftViewMode = UITextFieldViewModeAlways;
-        _inputField.returnKeyType = UIReturnKeySearch;
-        _inputField.delegate = self;
-        _inputField.clearButtonMode = UITextFieldViewModeWhileEditing;
-        [_panel addSubview:_inputField];
-
-        // 搜索按钮
-        UIButton *searchBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-        searchBtn.frame = CGRectMake(w - 16 - 70, 52, 70, 38);
-        [searchBtn setTitle:@"查询" forState:UIControlStateNormal];
-        [searchBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-        searchBtn.backgroundColor = [UIColor colorWithRed:0.2 green:0.5 blue:0.9 alpha:1];
-        searchBtn.layer.cornerRadius = 8;
-        searchBtn.titleLabel.font = [UIFont boldSystemFontOfSize:14];
-        [searchBtn addTarget:self action:@selector(search) forControlEvents:UIControlEventTouchUpInside];
-        [_panel addSubview:searchBtn];
-
-        // 调整输入框宽度（给搜索按钮让位）
-        CGRect tf = _inputField.frame;
-        tf.size.width = w - 32 - 78;
-        _inputField.frame = tf;
-
-        // 结果标签
-        _resultLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 100, w - 32, 100)];
-        _resultLabel.textColor = [UIColor whiteColor];
-        _resultLabel.font = [UIFont systemFontOfSize:14];
-        _resultLabel.numberOfLines = 0;
-        _resultLabel.textAlignment = NSTextAlignmentCenter;
-        _resultLabel.text = @"输入车型名称，点击查询";
-        _resultLabel.textColor = [UIColor colorWithWhite:0.7 alpha:1];
-        [_panel addSubview:_resultLabel];
+        [self setupFloatButton];
+        [self setupPanel];
     }
     return self;
 }
 
-#pragma mark - Actions
+#pragma mark - 悬浮按钮
+
+- (void)setupFloatButton {
+    CGFloat size = 48;
+    CGFloat y = [UIScreen mainScreen].bounds.size.height * 0.4;
+    _floatBtn = [[UIButton alloc] initWithFrame:CGRectMake(0, y, size, size)];
+    _floatBtn.backgroundColor = [UIColor colorWithWhite:0.15 alpha:0.75];
+    _floatBtn.layer.cornerRadius = size / 2;
+    _floatBtn.layer.shadowColor = [UIColor blackColor].CGColor;
+    _floatBtn.layer.shadowOffset = CGSizeMake(0, 2);
+    _floatBtn.layer.shadowOpacity = 0.3;
+    _floatBtn.layer.shadowRadius = 6;
+    _floatBtn.alpha = 0.35;
+    [_floatBtn setTitle:@"🚗" forState:UIControlStateNormal];
+    _floatBtn.titleLabel.font = [UIFont systemFontOfSize:20];
+    [_floatBtn addTarget:self action:@selector(floatBtnTapped) forControlEvents:UIControlEventTouchUpInside];
+    [_floatBtn addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handleFloatPan:)]];
+    // 动画：2秒后变半透明，点击时恢复不透明
+    [self performSelector:@selector(fadeFloatBtn) withObject:nil afterDelay:2.0];
+    [self addSubview:_floatBtn];
+}
+
+- (void)fadeFloatBtn {
+    if (!_panelVisible) {
+        [UIView animateWithDuration:0.5 animations:^{
+            self.floatBtn.alpha = 0.25;
+        }];
+    }
+}
+
+- (void)wakeFloatBtn {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(fadeFloatBtn) object:nil];
+    self.floatBtn.alpha = 0.85;
+    [self performSelector:@selector(fadeFloatBtn) withObject:nil afterDelay:3.0];
+}
+
+- (void)floatBtnTapped {
+    if (!self.isDraggingBtn) {
+        [self show];
+    }
+}
+
+- (void)handleFloatPan:(UIPanGestureRecognizer *)gr {
+    [self wakeFloatBtn];
+    CGPoint pt = [gr locationInView:self];
+    
+    if (gr.state == UIGestureRecognizerStateBegan) {
+        self.isDraggingBtn = NO;
+        self.btnDragStart = pt;
+    } else if (gr.state == UIGestureRecognizerStateChanged) {
+        CGFloat dx = pt.x - self.btnDragStart.x;
+        CGFloat dy = pt.y - self.btnDragStart.y;
+        if (fabs(dx) > 8 || fabs(dy) > 8) {
+            self.isDraggingBtn = YES;
+        }
+        CGPoint center = self.floatBtn.center;
+        center.x += dx;
+        center.y += dy;
+        self.floatBtn.center = center;
+        self.btnDragStart = pt;
+    } else if (gr.state == UIGestureRecognizerStateEnded) {
+        // 吸附到最近边缘
+        CGRect sb = [UIScreen mainScreen].bounds;
+        CGFloat midX = self.floatBtn.center.x;
+        CGFloat targetX = (midX < sb.size.width / 2) ? (self.floatBtn.frame.size.width / 2 - 4) : (sb.size.width - self.floatBtn.frame.size.width / 2 + 4);
+        CGFloat targetY = MAX(self.floatBtn.frame.size.height / 2 + 30,
+                              MIN(self.floatBtn.center.y,
+                                  sb.size.height - self.floatBtn.frame.size.height / 2 - 30));
+        
+        [UIView animateWithDuration:0.3 delay:0 usingSpringWithDamping:0.7 initialSpringVelocity:0.5 options:UIViewAnimationOptionCurveEaseOut animations:^{
+            self.floatBtn.center = CGPointMake(targetX, targetY);
+        } completion:nil];
+    }
+}
+
+#pragma mark - 面板
+
+- (void)setupPanel {
+    CGRect screen = [UIScreen mainScreen].bounds;
+    CGFloat w = 300, h = 230;
+    CGFloat x = (screen.size.width - w) / 2;
+    CGFloat y = 100;
+
+    // 遮罩
+    _bgMask = [[UIView alloc] initWithFrame:screen];
+    _bgMask.backgroundColor = [UIColor colorWithWhite:0 alpha:0.3];
+    _bgMask.userInteractionEnabled = YES;
+    _bgMask.hidden = YES;
+    [_bgMask addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleBgTap:)]];
+    [self addSubview:_bgMask];
+
+    // 面板
+    _panel = [[UIView alloc] initWithFrame:CGRectMake(x, y, w, h)];
+    _panel.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.95];
+    _panel.layer.cornerRadius = 16;
+    _panel.layer.shadowColor = [UIColor blackColor].CGColor;
+    _panel.layer.shadowOffset = CGSizeMake(0, 4);
+    _panel.layer.shadowOpacity = 0.4;
+    _panel.layer.shadowRadius = 12;
+    _panel.clipsToBounds = YES;
+    _panel.userInteractionEnabled = YES;
+    _panel.hidden = YES;
+    [self addSubview:_panel];
+
+    // 面板全区域拖动手势
+    UIPanGestureRecognizer *panelPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePanelPan:)];
+    [_panel addGestureRecognizer:panelPan];
+
+    // 双指缩放手势
+    UIPinchGestureRecognizer *pinch = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(handlePinch:)];
+    [_panel addGestureRecognizer:pinch];
+
+    // 标题
+    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, w, 36)];
+    title.text = @"OpenPilot 车型查询";
+    title.textColor = [UIColor whiteColor];
+    title.font = [UIFont boldSystemFontOfSize:14];
+    title.textAlignment = NSTextAlignmentCenter;
+    title.backgroundColor = [UIColor colorWithWhite:0.2 alpha:1];
+    [_panel addSubview:title];
+
+    // 拖动指示条
+    UIView *dragBar = [[UIView alloc] initWithFrame:CGRectMake((w - 36) / 2, 30, 36, 4)];
+    dragBar.backgroundColor = [UIColor colorWithWhite:0.5 alpha:0.5];
+    dragBar.layer.cornerRadius = 2;
+    [_panel addSubview:dragBar];
+
+    // 关闭按钮
+    _closeBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+    _closeBtn.frame = CGRectMake(w - 34, 2, 32, 32);
+    _closeBtn.backgroundColor = [UIColor colorWithWhite:0.3 alpha:1];
+    _closeBtn.layer.cornerRadius = 16;
+    [_closeBtn setTitle:@"✕" forState:UIControlStateNormal];
+    [_closeBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    _closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:13];
+    [_closeBtn addTarget:self action:@selector(hide) forControlEvents:UIControlEventTouchUpInside];
+    [_panel addSubview:_closeBtn];
+
+    // 输入框容器
+    UIView *inputRow = [[UIView alloc] initWithFrame:CGRectMake(12, 44, w - 24, 38)];
+    _inputField = [[UITextField alloc] initWithFrame:CGRectMake(0, 0, inputRow.frame.size.width - 78, 38)];
+    _inputField.backgroundColor = [UIColor colorWithWhite:0.25 alpha:1];
+    _inputField.textColor = [UIColor whiteColor];
+    _inputField.font = [UIFont systemFontOfSize:14];
+    _inputField.placeholder = @"输入车型，如: Civic 2022";
+    _inputField.attributedPlaceholder = [[NSAttributedString alloc] initWithString:@"输入车型，如: Civic 2022" attributes:@{NSForegroundColorAttributeName: [UIColor colorWithWhite:0.6 alpha:1]}];
+    _inputField.layer.cornerRadius = 8;
+    _inputField.leftView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 10, 0)];
+    _inputField.leftViewMode = UITextFieldViewModeAlways;
+    _inputField.returnKeyType = UIReturnKeySearch;
+    _inputField.delegate = self;
+    _inputField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    [inputRow addSubview:_inputField];
+
+    UIButton *searchBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    searchBtn.frame = CGRectMake(inputRow.frame.size.width - 74, 0, 74, 38);
+    [searchBtn setTitle:@"查询" forState:UIControlStateNormal];
+    [searchBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    searchBtn.backgroundColor = [UIColor colorWithRed:0.2 green:0.5 blue:0.9 alpha:1];
+    searchBtn.layer.cornerRadius = 8;
+    searchBtn.titleLabel.font = [UIFont boldSystemFontOfSize:14];
+    [searchBtn addTarget:self action:@selector(search) forControlEvents:UIControlEventTouchUpInside];
+    [inputRow addSubview:searchBtn];
+    [_panel addSubview:inputRow];
+
+    // 结果标签
+    _resultLabel = [[UILabel alloc] initWithFrame:CGRectMake(12, 92, w - 24, h - 104)];
+    _resultLabel.textColor = [UIColor colorWithWhite:0.7 alpha:1];
+    _resultLabel.font = [UIFont systemFontOfSize:13];
+    _resultLabel.numberOfLines = 0;
+    _resultLabel.textAlignment = NSTextAlignmentCenter;
+    _resultLabel.text = @"输入车型名称，点击查询";
+    [_panel addSubview:_resultLabel];
+}
+
+#pragma mark - 面板拖动
+
+- (void)handlePanelPan:(UIPanGestureRecognizer *)gr {
+    CGPoint pt = [gr translationInView:self];
+    CGPoint center = self.panel.center;
+    center.x += pt.x;
+    center.y += pt.y;
+    self.panel.center = center;
+    [gr setTranslation:CGPointZero inView:self];
+
+    if (gr.state == UIGestureRecognizerStateEnded) {
+        CGRect sb = [UIScreen mainScreen].bounds;
+        CGRect f = self.panel.frame;
+        f.origin.x = MAX(10, MIN(f.origin.x, sb.size.width - f.size.width - 10));
+        f.origin.y = MAX(40, MIN(f.origin.y, sb.size.height - f.size.height - 40));
+        [UIView animateWithDuration:0.2 animations:^{
+            self.panel.frame = f;
+        }];
+    }
+}
+
+#pragma mark - 双指缩放
+
+- (void)handlePinch:(UIPinchGestureRecognizer *)gr {
+    if (gr.state == UIGestureRecognizerStateBegan) {
+        self.lastPinchScale = self.panelScale;
+    }
+    CGFloat newScale = self.lastPinchScale * gr.scale;
+    newScale = MAX(0.6, MIN(newScale, 1.5));
+    self.panelScale = newScale;
+    self.panel.transform = CGAffineTransformMakeScale(newScale, newScale);
+}
+
+#pragma mark - 搜索
 
 - (void)search {
     [self.inputField resignFirstResponder];
@@ -135,7 +267,6 @@ static CarCheckFloatingView *sShared = nil;
         return;
     }
 
-    // 搜索匹配
     NSString *lower = [query lowercaseString];
     NSMutableArray *matches = [NSMutableArray array];
 
@@ -143,15 +274,11 @@ static CarCheckFloatingView *sShared = nil;
         NSString *brand = [NSString stringWithUTF8String:kSupportedVehicles[i].brand];
         NSString *model = [NSString stringWithUTF8String:kSupportedVehicles[i].model];
         NSString *full = [NSString stringWithFormat:@"%@ %@", brand, model];
-        NSString *fullLower = [full lowercaseString];
-
-        // 检查是否包含查询关键词
-        if ([fullLower containsString:lower]) {
+        if ([[full lowercaseString] containsString:lower]) {
             [matches addObject:full];
         }
     }
 
-    // 也搜索品牌别名（中文品牌名）
     if (matches.count == 0) {
         int j = 0;
         while (kBrandAliases[j][0] != NULL) {
@@ -159,7 +286,6 @@ static CarCheckFloatingView *sShared = nil;
             NSString *engBrand = [NSString stringWithUTF8String:kBrandAliases[j][1]];
             if ([[alias lowercaseString] containsString:lower] ||
                 [[engBrand lowercaseString] containsString:lower]) {
-                // 找到品牌别名，搜索该品牌所有车型
                 for (int i = 0; i < VEHICLE_COUNT; i++) {
                     NSString *brand = [NSString stringWithUTF8String:kSupportedVehicles[i].brand];
                     if ([[brand lowercaseString] isEqualToString:[engBrand lowercaseString]]) {
@@ -173,43 +299,20 @@ static CarCheckFloatingView *sShared = nil;
         }
     }
 
-    // 显示结果
     if (matches.count > 0) {
         NSMutableAttributedString *attr = [[NSMutableAttributedString alloc] init];
-        [attr appendAttributedString:[[NSAttributedString alloc] initWithString:@"✅ 支持\n\n" attributes:@{NSForegroundColorAttributeName: [UIColor colorWithRed:0.3 green:0.85 blue:0.4 alpha:1], NSFontAttributeName: [UIFont boldSystemFontOfSize:16]}]];
-
+        [attr appendAttributedString:[[NSAttributedString alloc] initWithString:@"✅ 支持\n\n" attributes:@{NSForegroundColorAttributeName: [UIColor colorWithRed:0.3 green:0.85 blue:0.4 alpha:1], NSFontAttributeName: [UIFont boldSystemFontOfSize:15]}]];
         for (NSString *match in matches) {
-            [attr appendAttributedString:[[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"• %@\n", match] attributes:@{NSForegroundColorAttributeName: [UIColor whiteColor], NSFontAttributeName: [UIFont systemFontOfSize:13]}]];
+            [attr appendAttributedString:[[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"• %@\n", match] attributes:@{NSForegroundColorAttributeName: [UIColor whiteColor], NSFontAttributeName: [UIFont systemFontOfSize:12]}]];
         }
-
         self.resultLabel.attributedText = attr;
     } else {
-        self.resultLabel.text = [NSString stringWithFormat:@"❌ 不支持\n\n「%@」不在 OpenPilot 支持列表中", query];
-        self.resultLabel.textColor = [UIColor colorWithRed:1 green:0.3 blue:0.3 alpha:1];
-    }
-}
-
-- (void)handleBgTap:(UITapGestureRecognizer *)gr {
-    [self.inputField resignFirstResponder];
-}
-
-- (void)handlePan:(UIPanGestureRecognizer *)gr {
-    CGPoint pt = [gr translationInView:self];
-    CGPoint center = self.panel.center;
-    center.x += pt.x;
-    center.y += pt.y;
-    self.panel.center = center;
-    [gr setTranslation:CGPointZero inView:self];
-
-    // 边界约束
-    if (gr.state == UIGestureRecognizerStateEnded) {
-        CGRect f = self.panel.frame;
-        CGRect sb = [UIScreen mainScreen].bounds;
-        f.origin.x = MAX(10, MIN(f.origin.x, sb.size.width - f.size.width - 10));
-        f.origin.y = MAX(40, MIN(f.origin.y, sb.size.height - f.size.height - 40));
-        [UIView animateWithDuration:0.2 animations:^{
-            self.panel.frame = f;
-        }];
+        NSString *msg = [NSString stringWithFormat:@"❌ 不支持\n\n「%@」\n不在 OpenPilot 支持列表中", query];
+        NSMutableAttributedString *attr = [[NSMutableAttributedString alloc] initWithString:msg];
+        [attr addAttribute:NSForegroundColorAttributeName value:[UIColor colorWithRed:1 green:0.3 blue:0.3 alpha:1] range:NSMakeRange(0, msg.length)];
+        [attr addAttribute:NSFontAttributeName value:[UIFont boldSystemFontOfSize:15] range:NSMakeRange(0, 4)];
+        [attr addAttribute:NSFontAttributeName value:[UIFont systemFontOfSize:13] range:NSMakeRange(4, msg.length - 4)];
+        self.resultLabel.attributedText = attr;
     }
 }
 
@@ -220,28 +323,44 @@ static CarCheckFloatingView *sShared = nil;
     return YES;
 }
 
+- (void)handleBgTap:(UITapGestureRecognizer *)gr {
+    [self.inputField resignFirstResponder];
+}
+
 #pragma mark - Show / Hide
 
 - (void)show {
-    self.hidden = NO;
+    [self wakeFloatBtn];
+    self.panelVisible = YES;
+    self.panel.hidden = NO;
+    self.bgMask.hidden = NO;
+    self.floatBtn.hidden = YES;
     self.panel.transform = CGAffineTransformMakeScale(0.85, 0.85);
     self.panel.alpha = 0;
+    self.bgMask.alpha = 0;
     [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
-        self.panel.transform = CGAffineTransformIdentity;
+        self.panel.transform = CGAffineTransformMakeScale(self.panelScale, self.panelScale);
         self.panel.alpha = 1;
+        self.bgMask.alpha = 1;
     } completion:nil];
     [self.inputField becomeFirstResponder];
 }
 
 - (void)hide {
+    self.panelVisible = NO;
     [UIView animateWithDuration:0.2 animations:^{
         self.panel.transform = CGAffineTransformMakeScale(0.85, 0.85);
         self.panel.alpha = 0;
+        self.bgMask.alpha = 0;
     } completion:^(BOOL f) {
-        self.hidden = YES;
-        self.panel.transform = CGAffineTransformIdentity;
+        self.panel.hidden = YES;
+        self.bgMask.hidden = YES;
+        self.floatBtn.hidden = NO;
+        self.panel.transform = CGAffineTransformMakeScale(self.panelScale, self.panelScale);
         self.panel.alpha = 1;
+        [self performSelector:@selector(fadeFloatBtn) withObject:nil afterDelay:2.0];
     }];
+    [self.inputField resignFirstResponder];
 }
 
 @end

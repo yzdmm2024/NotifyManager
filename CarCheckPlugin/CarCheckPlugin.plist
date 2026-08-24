@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Filter</key>
+	<dict>
+		<key>Bundles</key>
+		<array>
+			<string>com.apple.springboard</string>
+			<string>com.tencent.xin</string>
+			<string>com.tencent.mqq</string>
+			<string>com.tencent.mqqlite</string>
+			<string>com.tencent.tim</string>
+			<string>com.taobao.taobao</string>
+			<string>com.taobao.tmall</string>
+			<string>com.taobao.idlefish</string>
+			<string>com.tencent.mtt</string>
+			<string>com.tencent.wework</string>
+			<string>com.tencent.wework</string>
+			<string>com.zhihu.ios</string>
+			<string>com.sina.weibo</string>
+			<string>com.tencent.weibo</string>
+			<string>com.tencent.qqmail</string>
+			<string>com.apple.mobilemail</string>
+			<string>com.apple.mobilesafari</string>
+		</array>
+	</dict>
+</dict>
+</plist>

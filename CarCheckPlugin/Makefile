@@ -8,7 +8,7 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = CarCheckPlugin
 
 CarCheckPlugin_FILES = Source/Tweak.x Source/CarCheckFloatingView.m
-CarCheckPlugin_CFLAGS = -fobjc-arc
+CarCheckPlugin_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
 CarCheckPlugin_FRAMEWORKS = UIKit Foundation QuartzCore
 
 include $(THEOS_MAKE_PATH)/tweak.mk

@@ -1,5 +1,6 @@
 #import "AppCardView.h"
 #import "StorageManager.h"
+#import <objc/message.h>
 
 #pragma mark - 网络按钮颜色
 
@@ -26,7 +27,7 @@ static NSArray *NetOptions(void) {
 #pragma mark - AppCardView
 
 @interface AppCardView ()
-@property (nonatomic, strong) NSString *appId;
+@property (nonatomic, copy, readwrite) NSString *appId;
 @property (nonatomic, strong) NSString *appName;
 @property (nonatomic, strong) UISwitch *masterSwitch;
 @property (nonatomic, strong) NSMutableArray<UISwitch *> *dimSwitches;

@@ -364,7 +364,7 @@ static NSArray *NTM_allApps(void) {
 }
 
 // 获取 App 图标（带缓存，失败返回 nil）
-// 优先用私有函数 _LSCopyApplicationIcon（iOS 全版本可靠），失败再遍历应用列表兜底
+// 依次尝试：UIKit 私有方法 → _LSCopyApplicationIcon → 遍历应用列表，全部失败返回 nil
 static UIImage *NTM_appIcon(NSString *bundleId) {
     if (!bundleId.length) return nil;
     UIImage *cached = [NTM_iconCache() objectForKey:bundleId];
@@ -372,25 +372,38 @@ static UIImage *NTM_appIcon(NSString *bundleId) {
 
     UIImage *icon = nil;
     @try {
-        // 方法1: MobileCoreServices 私有函数 _LSCopyApplicationIcon（返回 +1 对象）
-        static CFTypeRef (*LSCopyIcon)(CFStringRef, BOOL) = NULL;
-        static dispatch_once_t once;
-        dispatch_once(&once, ^{
-            void *h = dlopen("/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_LAZY);
-            if (h) LSCopyIcon = (CFTypeRef (*)(CFStringRef, BOOL))dlsym(h, "_LSCopyApplicationIcon");
-        });
-        if (LSCopyIcon) {
-            CFTypeRef ref = LSCopyIcon((__bridge CFStringRef)bundleId, NO);
-            if (ref) {
-                icon = (__bridge_transfer UIImage *)ref;
-            }
+        // 方法1: UIKit 私有方法 +[UIImage _applicationIconImageForBundleIdentifier:format:scale:]（最可靠）
+        Class cls = [UIImage class];
+        SEL sel = NSSelectorFromString(@"_applicationIconImageForBundleIdentifier:format:scale:");
+        if ([cls respondsToSelector:sel]) {
+            typedef UIImage *(*IconFn)(id, SEL, NSString *, int, CGFloat);
+            IconFn fn = (IconFn)[cls methodForSelector:sel];
+            icon = fn(cls, sel, bundleId, 2, [UIScreen mainScreen].scale);
         }
     } @catch (NSException *e) {
         icon = nil;
     }
 
     if (!icon) {
-        // 方法2: 遍历应用列表（旧系统 LSApplicationProxy 有 icon 方法）
+        @try {
+            // 方法2: MobileCoreServices 私有函数 _LSCopyApplicationIcon（返回 +1 对象）
+            static CFTypeRef (*LSCopyIcon)(CFStringRef, BOOL) = NULL;
+            static dispatch_once_t once;
+            dispatch_once(&once, ^{
+                void *h = dlopen("/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_LAZY);
+                if (h) LSCopyIcon = (CFTypeRef (*)(CFStringRef, BOOL))dlsym(h, "_LSCopyApplicationIcon");
+            });
+            if (LSCopyIcon) {
+                CFTypeRef ref = LSCopyIcon((__bridge CFStringRef)bundleId, NO);
+                if (ref) icon = (__bridge_transfer UIImage *)ref;
+            }
+        } @catch (NSException *e) {
+            icon = nil;
+        }
+    }
+
+    if (!icon) {
+        // 方法3: 遍历应用列表（旧系统 LSApplicationProxy 有 icon 方法）
         NSArray *apps = NTM_allApps();
         for (id proxy in apps) {
             NSString *bid = [proxy valueForKey:@"bundleIdentifier"];
@@ -533,6 +546,10 @@ static NSDateFormatter *NTM_formatter(NSString *fmt) {
         NSMutableDictionary *ma = [a mutableCopy];
         ma[@"drain"] = @(drain);
         [finalList addObject:ma];
+    }
+    // 只显示使用量最大的前 10 个 App
+    if (finalList.count > 10) {
+        finalList = [finalList subarrayWithRange:NSMakeRange(0, 10)];
     }
     _appList = finalList;
 
@@ -706,7 +723,7 @@ static NSDateFormatter *NTM_formatter(NSString *fmt) {
     NSArray *hist = _data[@"batteryHistory"];
     if (upd) {
         NSString *t = [NTM_formatter(@"MM-dd HH:mm:ss") stringFromDate:[NSDate dateWithTimeIntervalSince1970:[upd doubleValue]]];
-        cell.valLabels[3].text = [NSString stringWithFormat:@"%@ · %ld App · %ld 条",
+        cell.valLabels[3].text = [NSString stringWithFormat:@"%@ · %ld App · %ld 条电量",
                                   t, (long)apps.count, (long)hist.count];
     } else {
         cell.valLabels[3].text = @"Tweak 未运行（重启 SpringBoard 生效）";

@@ -61,6 +61,8 @@ static NSTimer *g_timer = nil;
 static NSString *g_lastApp = nil;
 static NSTimeInterval g_lastTick = 0;
 
+static void NTM_pruneApps(NSMutableDictionary *data);
+
 static void NTM_tick(void) {
     NSMutableDictionary *data = NTM_load();
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
@@ -111,7 +113,26 @@ static void NTM_tick(void) {
     data[@"lastLevel"] = @(level);
     data[@"lastUpdate"] = @(now);
 
+    NTM_pruneApps(data);
     NTM_save(data);
+}
+
+// 限制 app 数量：只保留使用量（前台+后台）最大的前 15 个，防止数据无限增长
+static void NTM_pruneApps(NSMutableDictionary *data) {
+    NSMutableDictionary *apps = data[@"apps"];
+    if (!apps || apps.count <= 15) return;
+    NSArray *sorted = [apps keysSortedByValueUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        double ta = [a[@"foreground"] doubleValue] + [a[@"background"] doubleValue];
+        double tb = [b[@"foreground"] doubleValue] + [b[@"background"] doubleValue];
+        if (ta == tb) return NSOrderedSame;
+        return ta > tb ? NSOrderedAscending : NSOrderedDescending;
+    }];
+    NSArray *keep = [sorted subarrayWithRange:NSMakeRange(0, 15)];
+    NSMutableDictionary *newApps = [NSMutableDictionary dictionary];
+    for (NSString *bid in keep) {
+        newApps[bid] = apps[bid];
+    }
+    data[@"apps"] = newApps;
 }
 
 __attribute__((constructor))

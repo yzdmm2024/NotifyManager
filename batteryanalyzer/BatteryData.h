@@ -18,6 +18,7 @@
 @property (nonatomic) NSInteger chargeEndLevel;    // 上次充电结束时的电量 %
 @property (nonatomic, strong) NSArray<AppUsage *> *appUsages;
 @property (nonatomic, strong) NSArray<HourlyUsage *> *hourlyUsages;
+@property (nonatomic, strong) NSArray<NSString *> *relatedFiles; // 扫描到的所有相关文件
 @property (nonatomic, copy) NSString *errorMessage;
 + (instancetype)shared;
 - (void)loadData;

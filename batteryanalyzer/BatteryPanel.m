@@ -704,7 +704,9 @@ static UIImage *NTM_iconFromAssetsCar(NSString *bundleId) {
         });
         if (!CUICatalogClass) return nil;
 
-        id catalog = [[CUICatalogClass alloc] initWithName:@"Assets.car" fromBundle:bundle];
+        // CUICatalog 是私有类，initWithName:fromBundle: 需动态调用避免编译报错
+        id catalog = [CUICatalogClass performSelector:NSSelectorFromString(@"alloc")];
+        catalog = [catalog performSelector:NSSelectorFromString(@"initWithName:fromBundle:") withObject:@"Assets.car" withObject:bundle];
         if (!catalog) return nil;
 
         CGFloat scale = [UIScreen mainScreen].scale;
@@ -915,14 +917,15 @@ static NSDateFormatter *NTM_formatter(NSString *fmt) {
         if (wa == wb) return NSOrderedSame;
         return wa > wb ? NSOrderedAscending : NSOrderedDescending;
     }];
-    NSMutableArray *finalList = [NSMutableArray array];
+    NSMutableArray *tmpList = [NSMutableArray array];
     for (NSDictionary *a in list) {
         double weight = [a[@"weight"] doubleValue];
         NSInteger drain = (totalWeight > 0) ? (NSInteger)lround(totalDrain * weight / totalWeight) : 0;
         NSMutableDictionary *ma = [a mutableCopy];
         ma[@"drain"] = @(drain);
-        [finalList addObject:ma];
+        [tmpList addObject:ma];
     }
+    NSArray *finalList = tmpList;
     // 只显示使用量最大的前 10 个 App
     if (finalList.count > 10) {
         finalList = [finalList subarrayWithRange:NSMakeRange(0, 10)];

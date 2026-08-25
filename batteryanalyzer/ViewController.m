@@ -154,12 +154,13 @@
 
 #pragma mark - 数据源
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 4; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 5; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 4;
+    if (section == 0) return 5;
     if (section == 1) return MAX(_data.hourlyUsages.count, 1);
     if (section == 2) return MAX(_data.appUsages.count, 1);
+    if (section == 3) return MAX(_data.selfHistory.count, 1);
     return 1;
 }
 
@@ -168,6 +169,7 @@
         case 0: return @"电池总览";
         case 1: return @"每小时运行 App 数（最近 24 小时）";
         case 2: return @"App 耗电排行（前台/后台时间）";
+        case 3: return @"自记录电量历史";
         default: return @"说明";
     }
 }
@@ -218,8 +220,21 @@
             cell.titleLabel.text = @"暂无数据";
             cell.valueLabel.text = @"";
         }
+    } else if (indexPath.section == 3) {
+        if (_data.selfHistory.count) {
+            NSDictionary *e = _data.selfHistory[indexPath.row];
+            NSDate *ts = [NSDate dateWithTimeIntervalSince1970:[e[@"ts"] doubleValue]];
+            NSDateFormatter *df = [NSDateFormatter new];
+            df.dateFormat = @"MM-dd HH:mm";
+            cell.titleLabel.text = [df stringFromDate:ts];
+            cell.valueLabel.text = [NSString stringWithFormat:@"%ld%%", (long)[e[@"level"] integerValue]];
+        } else {
+            cell.titleLabel.text = @"暂无记录";
+            cell.valueLabel.text = @"";
+        }
     } else {
         cell.titleLabel.text = @"数据来自系统 Powerlog 数据库（/var/mobile/Library/Logs/CrashReporter/Powerlog_*.PLSQL）。\n"
+                              @"若设备上未找到 Powerlog 数据库，则显示实时电量、电池健康与自记录历史。\n"
                               @"耗电排行按前台+后台运行时间估算，实际耗电以系统「设置→电池」为准。\n"
                               @"右上角刷新按钮可重新读取最新数据。";
         cell.titleLabel.numberOfLines = 0;
@@ -247,6 +262,20 @@
             break;
         }
         case 1: {
+            cell.titleLabel.text = @"电池健康";
+            if (_data.cycleCount > 0) {
+                NSInteger health = 0;
+                if (_data.designCapacity > 0) {
+                    health = (NSInteger)lround((double)_data.maxCapacity / _data.designCapacity * 100);
+                }
+                cell.valueLabel.text = [NSString stringWithFormat:@"%ld 次 · %ld%%",
+                                        (long)_data.cycleCount, (long)health];
+            } else {
+                cell.valueLabel.text = @"暂无数据";
+            }
+            break;
+        }
+        case 2: {
             cell.titleLabel.text = @"上次充电结束";
             if (_data.lastChargeEnd) {
                 NSDateFormatter *df = [NSDateFormatter new];
@@ -257,7 +286,7 @@
             }
             break;
         }
-        case 2: {
+        case 3: {
             cell.titleLabel.text = @"本次耗电";
             NSInteger drain = _data.chargeEndLevel - _data.currentLevel;
             if (drain < 0) drain = 0;
@@ -265,7 +294,7 @@
                                     (long)_data.chargeEndLevel, (long)_data.currentLevel, (long)drain];
             break;
         }
-        case 3: {
+        case 4: {
             cell.titleLabel.text = @"本次时长";
             if (_data.lastChargeEnd) {
                 NSTimeInterval dur = [[NSDate date] timeIntervalSinceDate:_data.lastChargeEnd];

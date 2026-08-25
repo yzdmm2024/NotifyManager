@@ -63,29 +63,73 @@
     return (NSInteger)(level * 100 + 0.5);
 }
 
+// 从 log-aggregated 分析文件读取电池健康（循环次数/最大容量/设计容量）
+- (void)loadBatteryHealth {
+    _cycleCount = 0;
+    _maxCapacity = 0;
+    _designCapacity = 0;
+    NSString *dir = @"/var/mobile/Library/Logs/CrashReporter";
+    NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
+    NSString *aggPath = nil;
+    for (NSString *f in files) {
+        if ([f hasPrefix:@"log-aggregated-"] && [f hasSuffix:@".ips"]) {
+            aggPath = [dir stringByAppendingPathComponent:f];
+            break;
+        }
+    }
+    if (!aggPath) return;
+    NSData *data = [NSData dataWithContentsOfFile:aggPath];
+    if (!data) return;
+    NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![json isKindOfClass:[NSDictionary class]]) return;
+    for (NSString *key in json) {
+        id val = json[key];
+        if ([key containsString:@"BatteryCycleCount"]) {
+            _cycleCount = [val integerValue];
+        } else if ([key containsString:@"MaximumFCC"]) {
+            _maxCapacity = [val integerValue];
+        } else if ([key containsString:@"NominalChargeCapacity"]) {
+            _designCapacity = [val integerValue];
+        }
+    }
+}
+
+// 自记录电量历史：App 每次打开记录一次当前电量，存到 NSUserDefaults
+- (void)recordSelfHistory {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSMutableArray *hist = [[ud objectForKey:@"BatterySelfHistory"] mutableCopy];
+    if (!hist) hist = [NSMutableArray array];
+    NSInteger level = [self currentBatteryLevelIOKit];
+    if (level < 0) return;
+    NSDictionary *entry = @{
+        @"ts": @([[NSDate date] timeIntervalSince1970]),
+        @"level": @(level),
+    };
+    NSDictionary *last = hist.lastObject;
+    if (last && [[NSDate date] timeIntervalSince1970] - [last[@"ts"] doubleValue] < 60) {
+        [hist removeLastObject];
+    }
+    [hist addObject:entry];
+    if (hist.count > 200) {
+        [hist removeObjectsInRange:NSMakeRange(0, hist.count - 200)];
+    }
+    [ud setObject:hist forKey:@"BatterySelfHistory"];
+    [ud synchronize];
+    _selfHistory = [hist copy];
+}
+
 - (void)loadData {
     _errorMessage = nil;
     NSString *path = [self latestPowerlogPath];
     if (!path) {
-        NSInteger ioLevel = [self currentBatteryLevelIOKit];
-        NSMutableString *diag = [NSMutableString stringWithString:@"未找到 Powerlog 数据库。\n"];
-        [diag appendFormat:@"iOS 版本：%@\n", [[UIDevice currentDevice] systemVersion]];
-        [diag appendFormat:@"当前电量：%ld%%\n", (long)ioLevel];
-        NSString *logsDir = @"/var/mobile/Library/Logs";
-        NSArray *subs = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:logsDir error:nil];
-        [diag appendFormat:@"Logs 目录 %lu 个子目录/文件：\n", (unsigned long)subs.count];
-        for (NSString *s in subs) {
-            [diag appendFormat:@"  - %@\n", s];
-        }
-        if (_relatedFiles.count) {
-            [diag appendFormat:@"扫描到 %lu 个相关文件：\n", (unsigned long)_relatedFiles.count];
-            for (NSString *f in _relatedFiles) {
-                [diag appendFormat:@"  - %@\n", f];
-            }
-        } else {
-            [diag appendString:@"未扫描到任何相关文件（.PLSQL/.EPSQL/powerlog）。\n"];
-        }
-        _errorMessage = diag;
+        // Powerlog 不可用：改用实时电量 + 电池健康 + 自记录历史
+        _currentLevel = [self currentBatteryLevelIOKit];
+        [self loadBatteryHealth];
+        [self recordSelfHistory];
+        _lastChargeEnd = nil;
+        _chargeEndLevel = 0;
+        _appUsages = @[];
+        _hourlyUsages = @[];
         return;
     }
 

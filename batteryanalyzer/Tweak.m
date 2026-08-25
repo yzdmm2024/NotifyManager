@@ -61,11 +61,11 @@ static void NTM_tick(void) {
     }
     g_lastApp = front;
 
-    // 电量历史（每 60 秒一条，保留 24 小时）
+    // 电量历史：只在电量值变化时记录（相同电量不重复）
     NSMutableArray *hist = data[@"batteryHistory"];
     if (!hist) { hist = [NSMutableArray array]; data[@"batteryHistory"] = hist; }
-    NSDictionary *lastHist = hist.lastObject;
-    if (level >= 0 && (!lastHist || now - [lastHist[@"ts"] doubleValue] >= 60)) {
+    NSInteger prevLevel = [data[@"lastLevel"] integerValue];
+    if (level >= 0 && level != prevLevel) {
         [hist addObject:@{@"ts": @(now), @"level": @(level)}];
         if (hist.count > 1440) {
             [hist removeObjectsInRange:NSMakeRange(0, hist.count - 1440)];
@@ -73,7 +73,6 @@ static void NTM_tick(void) {
     }
 
     // 充电检测：电量上升 = 充电中；由充转放 = 充电结束
-    NSInteger prevLevel = [data[@"lastLevel"] integerValue];
     BOOL prevCharging = [data[@"charging"] boolValue];
     BOOL charging = (level > prevLevel) || (level == 100);
     if (charging && !prevCharging) {

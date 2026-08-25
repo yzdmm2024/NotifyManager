@@ -1,7 +1,7 @@
 // Tweak.m — 电池耗电监控（注入 SpringBoard）
-// 每 5 秒采样一次：记录当前前台 App 运行时间 + 电量变化
+// hook SBApplicationController 的 appProcessStateDidChange: 获取前台 App（FBApplicationProcess）
+// 定时器每 5 秒累计前台/后台时间 + 电量变化
 // 数据存到 /var/mobile/Library/Preferences/com.ntm.batteryanalyzer.plist
-// 设置面板（BatteryPanel.bundle）读取同一份数据展示
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -20,14 +20,10 @@ static void NTM_save(NSDictionary *d) {
     [d writeToFile:NTM_plistPath() atomically:YES];
 }
 
-// 当前前台 App 的 bundle id（私有 API）
-static NSString *NTM_frontApp(void) {
-    UIApplication *app = [UIApplication sharedApplication];
-    NSString *bundleId = [app valueForKey:@"_accessibilityFrontMostApplication"];
-    if (![bundleId isKindOfClass:[NSString class]] || !bundleId.length) return nil;
-    return bundleId;
-}
+// hook 记录的前台 app（bundle id），nil 表示当前无前台 app（主屏幕/锁屏）
+static NSString *g_frontApp = nil;
 
+// 获取当前电量
 static NSInteger NTM_batteryLevel(void) {
     UIDevice *dev = [UIDevice currentDevice];
     dev.batteryMonitoringEnabled = YES;
@@ -47,19 +43,23 @@ static void NTM_tick(void) {
     g_lastTick = now;
     if (dt <= 0 || dt > 60) dt = 5.0;
 
-    NSString *front = NTM_frontApp();
+    NSString *front = g_frontApp;
     NSInteger level = NTM_batteryLevel();
 
-    // 累计前台 App 运行时间
-    if (g_lastApp && dt > 0) {
+    // 累计前台/后台时间：前台 app 累计 foreground，离开前台后累计 background
+    if (g_lastApp) {
         NSMutableDictionary *apps = data[@"apps"];
         if (!apps) { apps = [NSMutableDictionary dictionary]; data[@"apps"] = apps; }
         NSMutableDictionary *info = apps[g_lastApp];
         if (!info) { info = [NSMutableDictionary dictionary]; apps[g_lastApp] = info; }
-        info[@"foreground"] = @([info[@"foreground"] doubleValue] + dt);
+        if (front && [front isEqualToString:g_lastApp]) {
+            info[@"foreground"] = @([info[@"foreground"] doubleValue] + dt);
+        } else {
+            info[@"background"] = @([info[@"background"] doubleValue] + dt);
+        }
         info[@"lastSeen"] = @(now);
     }
-    g_lastApp = front;
+    if (front) g_lastApp = front;
 
     // 电量历史：只在电量值变化时记录（相同电量不重复）
     NSMutableArray *hist = data[@"batteryHistory"];
@@ -89,8 +89,32 @@ static void NTM_tick(void) {
     NTM_save(data);
 }
 
+// hook SBApplicationController applicationController:appProcessStateDidChange:
+// arg2: FBApplicationProcess（bundleIdentifier），arg3: FBProcessState（taskState: 1=前台 2=后台）
+static void (*orig_appProcessStateDidChange)(id, SEL, id, id, id);
+static void hook_appProcessStateDidChange(id self, SEL _cmd, id controller, id process, id state) {
+    orig_appProcessStateDidChange(self, _cmd, controller, process, state);
+    NSString *bundleId = [process valueForKey:@"bundleIdentifier"];
+    if (![bundleId isKindOfClass:[NSString class]] || !bundleId.length) return;
+    NSInteger taskState = [[state valueForKey:@"taskState"] integerValue];
+    if (taskState == 1) {
+        g_frontApp = bundleId;
+    } else if (taskState == 2) {
+        if ([g_frontApp isEqualToString:bundleId]) {
+            g_frontApp = nil;
+        }
+    }
+}
+
 __attribute__((constructor))
 static void NTM_init(void) {
+    Class cls = NSClassFromString(@"SBApplicationController");
+    SEL sel = NSSelectorFromString(@"applicationController:appProcessStateDidChange:");
+    Method m = class_getInstanceMethod(cls, sel);
+    if (m) {
+        orig_appProcessStateDidChange = (void (*)(id, SEL, id, id, id))method_getImplementation(m);
+        method_setImplementation(m, (IMP)hook_appProcessStateDidChange);
+    }
     dispatch_async(dispatch_get_main_queue(), ^{
         g_timer = [NSTimer timerWithTimeInterval:5.0 repeats:YES block:^(NSTimer *t) {
             NTM_tick();

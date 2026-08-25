@@ -22,7 +22,9 @@
 // 玻璃拟态卡片 cell
 @interface GlassCell : UITableViewCell
 @property (nonatomic, strong) UIView *cardView;
+@property (nonatomic, strong) UIImageView *iconView;
 @property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, strong) UILabel *subtitleLabel;
 @property (nonatomic, strong) UILabel *valueLabel;
 @end
 
@@ -52,10 +54,25 @@
 
         _titleLabel = [UILabel new];
         _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-        _titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
-        _titleLabel.textColor = [UIColor colorWithWhite:0.35 alpha:1];
-        _titleLabel.numberOfLines = 0;
+        _titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+        _titleLabel.textColor = [UIColor colorWithWhite:0.12 alpha:1];
+        _titleLabel.numberOfLines = 1;
         [_cardView addSubview:_titleLabel];
+
+        _subtitleLabel = [UILabel new];
+        _subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        _subtitleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+        _subtitleLabel.textColor = [UIColor colorWithWhite:0.45 alpha:1];
+        _subtitleLabel.numberOfLines = 1;
+        [_cardView addSubview:_subtitleLabel];
+
+        _iconView = [UIImageView new];
+        _iconView.translatesAutoresizingMaskIntoConstraints = NO;
+        _iconView.layer.cornerRadius = 9;
+        _iconView.clipsToBounds = YES;
+        _iconView.contentMode = UIViewContentModeScaleAspectFill;
+        _iconView.backgroundColor = [UIColor colorWithWhite:0.9 alpha:1];
+        [_cardView addSubview:_iconView];
 
         _valueLabel = [UILabel new];
         _valueLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -76,10 +93,18 @@
             [blur.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor],
             [blur.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor],
 
-            [_titleLabel.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:18],
-            [_titleLabel.topAnchor constraintEqualToAnchor:_cardView.topAnchor constant:14],
-            [_titleLabel.bottomAnchor constraintEqualToAnchor:_cardView.bottomAnchor constant:-14],
+            [_iconView.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:16],
+            [_iconView.centerYAnchor constraintEqualToAnchor:_cardView.centerYAnchor],
+            [_iconView.widthAnchor constraintEqualToConstant:40],
+            [_iconView.heightAnchor constraintEqualToConstant:40],
+
+            [_titleLabel.leadingAnchor constraintEqualToAnchor:_iconView.trailingAnchor constant:12],
+            [_titleLabel.topAnchor constraintEqualToAnchor:_cardView.topAnchor constant:13],
             [_titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_valueLabel.leadingAnchor constant:-8],
+
+            [_subtitleLabel.leadingAnchor constraintEqualToAnchor:_titleLabel.leadingAnchor],
+            [_subtitleLabel.topAnchor constraintEqualToAnchor:_titleLabel.bottomAnchor constant:2],
+            [_subtitleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_valueLabel.leadingAnchor constant:-8],
 
             [_valueLabel.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor constant:-18],
             [_valueLabel.centerYAnchor constraintEqualToAnchor:_cardView.centerYAnchor],
@@ -171,6 +196,23 @@ static NSString *NTM_appName(NSString *bundleId) {
         return [bundleId substringFromIndex:10];
     }
     return bundleId;
+}
+
+// 获取 App 图标（LSApplicationWorkspace，失败返回 nil）
+static UIImage *NTM_appIcon(NSString *bundleId) {
+    Class wsClass = NSClassFromString(@"LSApplicationWorkspace");
+    if (!wsClass) return nil;
+    id ws = [wsClass performSelector:@selector(defaultWorkspace)];
+    if (!ws) return nil;
+    NSArray *apps = [ws performSelector:@selector(allApplications)];
+    for (id proxy in apps) {
+        NSString *bid = [proxy valueForKey:@"bundleIdentifier"];
+        if ([bid isEqualToString:bundleId]) {
+            id icon = [proxy performSelector:@selector(icon)];
+            if ([icon isKindOfClass:[UIImage class]]) return icon;
+        }
+    }
+    return nil;
 }
 
 @implementation NTMBatteryPrincipalController
@@ -340,6 +382,10 @@ static NSString *NTM_appName(NSString *bundleId) {
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     GlassCell *cell = [tableView dequeueReusableCellWithIdentifier:@"glass"];
     if (!cell) cell = [[GlassCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"glass"];
+    cell.iconView.image = nil;
+    cell.subtitleLabel.text = @"";
+    cell.valueLabel.textColor = [UIColor colorWithWhite:0.12 alpha:1];
+    cell.valueLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
 
     if (indexPath.section == 0) {
         [self configOverviewCell:cell row:indexPath.row];
@@ -349,19 +395,26 @@ static NSString *NTM_appName(NSString *bundleId) {
             NSInteger fg = (NSInteger)([a[@"fg"] doubleValue] / 60);
             NSInteger bg = (NSInteger)([a[@"bg"] doubleValue] / 60);
             NSInteger drain = [a[@"drain"] integerValue];
-            cell.titleLabel.text = [NSString stringWithFormat:@"%@ · 前台 %ld分 · 后台 %ld分",
-                                    NTM_appName(a[@"id"]), (long)fg, (long)bg];
-            if (drain > 0) {
-                cell.valueLabel.text = [NSString stringWithFormat:@"耗电 %ld%%", (long)drain];
-                cell.valueLabel.textColor = [UIColor systemRedColor];
-                cell.valueLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightBold];
+            cell.titleLabel.text = NTM_appName(a[@"id"]);
+            cell.iconView.image = NTM_appIcon(a[@"id"]);
+            if (bg > 0) {
+                cell.subtitleLabel.text = [NSString stringWithFormat:@"前台 %ld分 · 后台 %ld分", (long)fg, (long)bg];
             } else {
-                cell.valueLabel.text = @"";
+                cell.subtitleLabel.text = [NSString stringWithFormat:@"前台 %ld分", (long)fg];
+            }
+            NSInteger total = fg + bg;
+            if (drain > 0) {
+                cell.valueLabel.text = [NSString stringWithFormat:@"%ld分 · 耗电 %ld%%", (long)total, (long)drain];
+                cell.valueLabel.textColor = [UIColor systemRedColor];
+                cell.valueLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightBold];
+            } else {
+                cell.valueLabel.text = [NSString stringWithFormat:@"%ld分", (long)total];
                 cell.valueLabel.textColor = [UIColor colorWithWhite:0.12 alpha:1];
                 cell.valueLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
             }
         } else {
             cell.titleLabel.text = @"暂无数据（安装后需运行一段时间积累）";
+            cell.subtitleLabel.text = @"";
             cell.valueLabel.text = @"";
         }
     } else {

@@ -361,20 +361,43 @@ static NSArray *NTM_allApps(void) {
 }
 
 // 获取 App 图标（带缓存，失败返回 nil）
+// iOS 16 的 allApplications 返回 LSApplicationRecord（无 icon 方法），
+// 需用 iconDataForVariant:withOptions: 取图标数据；旧系统 LSApplicationProxy 才有 icon。
 static UIImage *NTM_appIcon(NSString *bundleId) {
     if (!bundleId.length) return nil;
     UIImage *cached = [NTM_iconCache() objectForKey:bundleId];
     if (cached) return cached;
+
+    UIImage *icon = nil;
     NSArray *apps = NTM_allApps();
     for (id proxy in apps) {
         NSString *bid = [proxy valueForKey:@"bundleIdentifier"];
-        if ([bid isEqualToString:bundleId]) {
-            id icon = [proxy performSelector:@selector(icon)];
-            if ([icon isKindOfClass:[UIImage class]]) {
-                [NTM_iconCache() setObject:icon forKey:bundleId];
-                return icon;
+        if (![bid isEqualToString:bundleId]) continue;
+        @try {
+            // iOS 16+: LSApplicationRecord 用 iconDataForVariant:withOptions:（variant 2 = 大图标）
+            SEL dataSel = NSSelectorFromString(@"iconDataForVariant:withOptions:");
+            if ([proxy respondsToSelector:dataSel]) {
+                typedef NSData *(*IconDataFn)(id, SEL, NSInteger, NSDictionary *);
+                IconDataFn fn = (IconDataFn)[proxy methodForSelector:dataSel];
+                NSData *data = fn(proxy, dataSel, 2, @{});
+                if ([data isKindOfClass:[NSData class]] && data.length) {
+                    icon = [UIImage imageWithData:data];
+                }
             }
+            // 旧系统: LSApplicationProxy 有 icon 方法
+            if (!icon && [proxy respondsToSelector:@selector(icon)]) {
+                id i = [proxy performSelector:@selector(icon)];
+                if ([i isKindOfClass:[UIImage class]]) icon = i;
+            }
+        } @catch (NSException *e) {
+            icon = nil;
         }
+        if (icon) break;
+    }
+
+    if (icon) {
+        [NTM_iconCache() setObject:icon forKey:bundleId];
+        return icon;
     }
     return nil;
 }

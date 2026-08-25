@@ -99,15 +99,18 @@ static void NTM_tick(void) {
         }
     }
 
-    // 充电检测：电量上升 = 充电中；由充转放 = 充电结束
+    // 充电检测：直接用系统电池状态（UIDeviceBatteryState），比"电量上升"判断更可靠
+    UIDevice *dev = [UIDevice currentDevice];
+    dev.batteryMonitoringEnabled = YES;
+    UIDeviceBatteryState state = dev.batteryState;
+    BOOL charging = (state == UIDeviceBatteryStateCharging || state == UIDeviceBatteryStateFull);
     BOOL prevCharging = [data[@"charging"] boolValue];
-    BOOL charging = (level > prevLevel) || (level == 100);
     if (charging && !prevCharging) {
         data[@"chargeStart"] = @(now);
     }
-    if (!charging && prevCharging && prevLevel > 0) {
+    if (!charging && prevCharging) {
         data[@"lastChargeEnd"] = @(now);
-        data[@"chargeEndLevel"] = @(prevLevel);
+        data[@"chargeEndLevel"] = @(level > 0 ? level : prevLevel);
     }
     data[@"charging"] = @(charging);
     data[@"lastLevel"] = @(level);

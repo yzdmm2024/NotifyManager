@@ -1,4 +1,5 @@
 #import "BatteryData.h"
+#import <UIKit/UIKit.h>
 #import <sqlite3.h>
 #import <MobileCoreServices/MobileCoreServices.h>
 

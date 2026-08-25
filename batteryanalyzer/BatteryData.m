@@ -86,13 +86,39 @@
 
     sqlite3 *db = NULL;
     if (sqlite3_open([path UTF8String], &db) != SQLITE_OK) {
-        _errorMessage = @"无法打开 Powerlog 数据库";
+        _errorMessage = [NSString stringWithFormat:@"无法打开数据库：%@", path.lastPathComponent];
         return;
     }
+
+    // 收集表列表（调试用）
+    NSMutableArray *tables = [NSMutableArray array];
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE type='table'", -1, &stmt, NULL) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const char *name = (const char *)sqlite3_column_text(stmt, 0);
+            if (name) [tables addObject:[NSString stringWithUTF8String:name]];
+        }
+    }
+    sqlite3_finalize(stmt);
+
     [self loadBatteryHistory:db];
     [self loadAppUsage:db];
     [self loadHourlyUsage:db];
     sqlite3_close(db);
+
+    // 当前电量兜底：Powerlog 无电量历史时用系统 API
+    if (!_batteryHistory.count) {
+        _currentLevel = [self currentBatteryLevelIOKit];
+    }
+
+    // 没数据时显示调试信息，帮助定位
+    if (!_batteryHistory.count && !_appUsages.count && !_hourlyUsages.count) {
+        NSMutableString *diag = [NSMutableString stringWithFormat:@"数据库打开成功但未读到数据。\n数据库：%@\n表数量：%lu\n", path.lastPathComponent, (unsigned long)tables.count];
+        for (NSString *t in tables) {
+            [diag appendFormat:@"  - %@\n", t];
+        }
+        _errorMessage = diag;
+    }
 }
 
 // 电量历史：Level 是 0-1 的百分比

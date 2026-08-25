@@ -27,7 +27,7 @@ jobs:
           cd batteryanalyzer
           clang -x objective-c -arch arm64 -isysroot "$SDK" -miphoneos-version-min=15.0 \
                 -fobjc-arc -fblocks -O2 -fobjc-exceptions \
-                -framework UIKit -framework Foundation -framework MobileCoreServices -framework IOKit \
+                -framework UIKit -framework Foundation -framework MobileCoreServices \
                 -lsqlite3 \
                 main.m AppDelegate.m ViewController.m BatteryData.m -o BatteryAnalyzer
           mkdir -p Payload/BatteryAnalyzer.app

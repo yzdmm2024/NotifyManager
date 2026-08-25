@@ -235,7 +235,8 @@
     } else {
         cell.titleLabel.text = @"数据来自系统 Powerlog 数据库（/var/mobile/Library/Logs/CrashReporter/Powerlog_*.PLSQL）。\n"
                               @"若设备上未找到 Powerlog 数据库，则显示实时电量、电池健康与自记录历史。\n"
-                              @"耗电排行按前台+后台运行时间估算，实际耗电以系统「设置→电池」为准。\n"
+                              @"每 App 耗电与每小时 App 数依赖 Powerlog，设备上无此数据库时无法获取。\n"
+                              @"电池健康需要系统生成 log-aggregated 分析文件：设置→隐私与安全性→分析与改进→开启「共享 iPhone 分析」，等待 24 小时后重新打开本 App。\n"
                               @"右上角刷新按钮可重新读取最新数据。";
         cell.titleLabel.numberOfLines = 0;
         cell.titleLabel.font = [UIFont systemFontOfSize:13];
@@ -272,6 +273,7 @@
                                         (long)_data.cycleCount, (long)health];
             } else {
                 cell.valueLabel.text = @"暂无数据";
+                cell.titleLabel.text = @"电池健康（未找到 log-aggregated 文件）";
             }
             break;
         }

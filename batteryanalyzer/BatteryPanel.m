@@ -5,6 +5,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <dlfcn.h>
 
 // PSViewController 是 PreferenceLoader 控制器的正确基类
 @interface PSViewController : UIViewController
@@ -92,17 +93,19 @@
             v.textColor = [UIColor colorWithWhite:0.15 alpha:1];
             v.textAlignment = NSTextAlignmentRight;
             v.numberOfLines = 1;
-            v.lineBreakMode = NSLineBreakByTruncatingTail;
+            v.lineBreakMode = NSLineBreakByClipping;
+            v.adjustsFontSizeToFitWidth = YES;
+            v.minimumScaleFactor = 0.7;
             [_cardView addSubview:v];
             [_valLabels addObject:v];
 
             [NSLayoutConstraint activateConstraints:@[
                 [k.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:18],
-                [k.trailingAnchor constraintLessThanOrEqualToAnchor:_cardView.centerXAnchor constant:-8],
+                [k.widthAnchor constraintEqualToConstant:92],
                 [k.centerYAnchor constraintEqualToAnchor:v.centerYAnchor],
 
                 [v.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor constant:-18],
-                [v.leadingAnchor constraintGreaterThanOrEqualToAnchor:_cardView.centerXAnchor constant:8],
+                [v.leadingAnchor constraintEqualToAnchor:k.trailingAnchor constant:8],
                 [v.centerYAnchor constraintEqualToAnchor:k.centerYAnchor],
             ]];
 
@@ -361,38 +364,47 @@ static NSArray *NTM_allApps(void) {
 }
 
 // 获取 App 图标（带缓存，失败返回 nil）
-// iOS 16 的 allApplications 返回 LSApplicationRecord（无 icon 方法），
-// 需用 iconDataForVariant:withOptions: 取图标数据；旧系统 LSApplicationProxy 才有 icon。
+// 优先用私有函数 _LSCopyApplicationIcon（iOS 全版本可靠），失败再遍历应用列表兜底
 static UIImage *NTM_appIcon(NSString *bundleId) {
     if (!bundleId.length) return nil;
     UIImage *cached = [NTM_iconCache() objectForKey:bundleId];
     if (cached) return cached;
 
     UIImage *icon = nil;
-    NSArray *apps = NTM_allApps();
-    for (id proxy in apps) {
-        NSString *bid = [proxy valueForKey:@"bundleIdentifier"];
-        if (![bid isEqualToString:bundleId]) continue;
-        @try {
-            // iOS 16+: LSApplicationRecord 用 iconDataForVariant:withOptions:（variant 2 = 大图标）
-            SEL dataSel = NSSelectorFromString(@"iconDataForVariant:withOptions:");
-            if ([proxy respondsToSelector:dataSel]) {
-                typedef NSData *(*IconDataFn)(id, SEL, NSInteger, NSDictionary *);
-                IconDataFn fn = (IconDataFn)[proxy methodForSelector:dataSel];
-                NSData *data = fn(proxy, dataSel, 2, @{});
-                if ([data isKindOfClass:[NSData class]] && data.length) {
-                    icon = [UIImage imageWithData:data];
-                }
+    @try {
+        // 方法1: MobileCoreServices 私有函数 _LSCopyApplicationIcon（返回 +1 对象）
+        static CFTypeRef (*LSCopyIcon)(CFStringRef, BOOL) = NULL;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            void *h = dlopen("/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices", RTLD_LAZY);
+            if (h) LSCopyIcon = (CFTypeRef (*)(CFStringRef, BOOL))dlsym(h, "_LSCopyApplicationIcon");
+        });
+        if (LSCopyIcon) {
+            CFTypeRef ref = LSCopyIcon((__bridge CFStringRef)bundleId, NO);
+            if (ref) {
+                icon = (__bridge_transfer UIImage *)ref;
             }
-            // 旧系统: LSApplicationProxy 有 icon 方法
-            if (!icon && [proxy respondsToSelector:@selector(icon)]) {
-                id i = [proxy performSelector:@selector(icon)];
-                if ([i isKindOfClass:[UIImage class]]) icon = i;
-            }
-        } @catch (NSException *e) {
-            icon = nil;
         }
-        if (icon) break;
+    } @catch (NSException *e) {
+        icon = nil;
+    }
+
+    if (!icon) {
+        // 方法2: 遍历应用列表（旧系统 LSApplicationProxy 有 icon 方法）
+        NSArray *apps = NTM_allApps();
+        for (id proxy in apps) {
+            NSString *bid = [proxy valueForKey:@"bundleIdentifier"];
+            if (![bid isEqualToString:bundleId]) continue;
+            @try {
+                if ([proxy respondsToSelector:@selector(icon)]) {
+                    id i = [proxy performSelector:@selector(icon)];
+                    if ([i isKindOfClass:[UIImage class]]) icon = i;
+                }
+            } @catch (NSException *e) {
+                icon = nil;
+            }
+            if (icon) break;
+        }
     }
 
     if (icon) {
@@ -694,7 +706,7 @@ static NSDateFormatter *NTM_formatter(NSString *fmt) {
     NSArray *hist = _data[@"batteryHistory"];
     if (upd) {
         NSString *t = [NTM_formatter(@"MM-dd HH:mm:ss") stringFromDate:[NSDate dateWithTimeIntervalSince1970:[upd doubleValue]]];
-        cell.valLabels[3].text = [NSString stringWithFormat:@"更新 %@ · %ld App · %ld 条电量",
+        cell.valLabels[3].text = [NSString stringWithFormat:@"%@ · %ld App · %ld 条",
                                   t, (long)apps.count, (long)hist.count];
     } else {
         cell.valLabels[3].text = @"Tweak 未运行（重启 SpringBoard 生效）";

@@ -21,20 +21,27 @@
     return d;
 }
 
-// 找到最新的 Powerlog 数据库：递归扫描 Logs 目录，支持 .PLSQL / .PLSQL.gz / .powerlog
+// 找到最新的 Powerlog 数据库：递归扫描多个目录，支持 iOS15 的 .PLSQL 和 iOS16 的 .EPSQL 等格式
 - (NSString *)latestPowerlogPath {
     NSMutableArray *candidates = [NSMutableArray array];
     NSArray *roots = @[
         @"/var/mobile/Library/Logs",
         @"/private/var/mobile/Library/Logs",
+        @"/var/db",
+        @"/private/var/db",
+        @"/var/mobile/Library/Preferences",
+        @"/private/var/mobile/Library/Preferences",
     ];
     NSFileManager *fm = [NSFileManager defaultManager];
     for (NSString *root in roots) {
         NSDirectoryEnumerator *en = [fm enumeratorAtPath:root];
         for (NSString *rel in en) {
             NSString *lower = rel.lowercaseString;
-            if ([lower hasSuffix:@".plsql"] || [lower hasSuffix:@".plsql.gz"] ||
-                [lower hasSuffix:@".powerlog"] || [lower containsString:@"powerlog"]) {
+            BOOL match = [lower hasSuffix:@".plsql"] || [lower hasSuffix:@".plsql.gz"] ||
+                         [lower hasSuffix:@".epsql"] || [lower hasSuffix:@".epsql.gz"] ||
+                         [lower hasSuffix:@".powerlog"] || [lower containsString:@"powerlog"] ||
+                         [lower containsString:@"batterystats"] || [lower containsString:@"batteryusage"];
+            if (match) {
                 NSString *full = [root stringByAppendingPathComponent:rel];
                 BOOL isDir = NO;
                 if ([fm fileExistsAtPath:full isDirectory:&isDir] && !isDir) {
@@ -43,6 +50,7 @@
             }
         }
     }
+    _relatedFiles = [candidates copy];
     [candidates sortUsingSelector:@selector(compare:)];
     return candidates.lastObject;
 }
@@ -63,24 +71,14 @@
         NSInteger ioLevel = [self currentBatteryLevelIOKit];
         NSMutableString *diag = [NSMutableString stringWithString:@"未找到 Powerlog 数据库。\n"];
         [diag appendFormat:@"iOS 版本：%@\n", [[UIDevice currentDevice] systemVersion]];
-        [diag appendFormat:@"当前电量（IOKit）：%ld%%\n", (long)ioLevel];
-        [diag appendString:@"已扫描的目录：\n"];
-        NSArray *dirs = @[
-            @"/var/mobile/Library/Logs/CrashReporter",
-            @"/var/mobile/Library/Logs/Powerlog",
-            @"/var/mobile/Library/Logs",
-        ];
-        for (NSString *dir in dirs) {
-            BOOL isDir = NO;
-            BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:dir isDirectory:&isDir];
-            [diag appendFormat:@"%@：%@\n", dir, exists ? @"存在" : @"不存在"];
-            if (exists) {
-                NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
-                [diag appendFormat:@"  文件数 %lu\n", (unsigned long)files.count];
-                for (NSString *f in [files subarrayWithRange:NSMakeRange(0, MIN(files.count, 6))]) {
-                    [diag appendFormat:@"  - %@\n", f];
-                }
+        [diag appendFormat:@"当前电量：%ld%%\n", (long)ioLevel];
+        if (_relatedFiles.count) {
+            [diag appendFormat:@"扫描到 %lu 个相关文件：\n", (unsigned long)_relatedFiles.count];
+            for (NSString *f in _relatedFiles) {
+                [diag appendFormat:@"  - %@\n", f];
             }
+        } else {
+            [diag appendString:@"未扫描到任何相关文件（.PLSQL/.EPSQL/powerlog/batterystats）。\n"];
         }
         _errorMessage = diag;
         return;

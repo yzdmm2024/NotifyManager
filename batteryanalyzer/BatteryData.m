@@ -64,6 +64,7 @@
 }
 
 // 从 log-aggregated 分析文件读取电池健康（循环次数/最大容量/设计容量）
+// log-aggregated 是多行 JSON（NDJSON），每行一个 JSON 对象，需逐行解析
 - (void)loadBatteryHealth {
     _cycleCount = 0;
     _maxCapacity = 0;
@@ -78,18 +79,23 @@
         }
     }
     if (!aggPath) return;
-    NSData *data = [NSData dataWithContentsOfFile:aggPath];
-    if (!data) return;
-    NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-    if (![json isKindOfClass:[NSDictionary class]]) return;
-    for (NSString *key in json) {
-        id val = json[key];
-        if ([key containsString:@"BatteryCycleCount"]) {
-            _cycleCount = [val integerValue];
-        } else if ([key containsString:@"MaximumFCC"]) {
-            _maxCapacity = [val integerValue];
-        } else if ([key containsString:@"NominalChargeCapacity"]) {
-            _designCapacity = [val integerValue];
+    NSString *content = [NSString stringWithContentsOfFile:aggPath encoding:NSUTF8StringEncoding error:nil];
+    if (!content) return;
+    NSArray *lines = [content componentsSeparatedByString:@"\n"];
+    for (NSString *line in lines) {
+        if (!line.length) continue;
+        NSData *lineData = [line dataUsingEncoding:NSUTF8StringEncoding];
+        NSDictionary *obj = [NSJSONSerialization JSONObjectWithData:lineData options:0 error:nil];
+        if (![obj isKindOfClass:[NSDictionary class]]) continue;
+        for (NSString *key in obj) {
+            id val = obj[key];
+            if ([key containsString:@"BatteryCycleCount"]) {
+                _cycleCount = [val integerValue];
+            } else if ([key containsString:@"MaximumFCC"]) {
+                _maxCapacity = [val integerValue];
+            } else if ([key containsString:@"NominalChargeCapacity"]) {
+                _designCapacity = [val integerValue];
+            }
         }
     }
 }

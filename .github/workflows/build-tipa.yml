@@ -1,0 +1,49 @@
+name: build-tipa
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ldid
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+          HOMEBREW_NO_INSTALL_CLEANUP: 1
+          HOMEBREW_NO_ENV_HINTS: 1
+          HOMEBREW_NO_REQUIRE_TAP_TRUST: 1
+        run: brew install ldid || true
+
+      - name: "Compile + package TIPA"
+        run: |
+          set -e
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          echo "iOS SDK: $SDK"
+          cd batteryanalyzer
+          clang -x objective-c -arch arm64 -isysroot "$SDK" -miphoneos-version-min=15.0 \
+                -fobjc-arc -fblocks -O2 -fobjc-exceptions \
+                -framework UIKit -framework Foundation -framework MobileCoreServices \
+                -lsqlite3 \
+                main.m AppDelegate.m ViewController.m BatteryData.m -o BatteryAnalyzer
+          mkdir -p Payload/BatteryAnalyzer.app
+          cp BatteryAnalyzer Payload/BatteryAnalyzer.app/
+          cp Info.plist Payload/BatteryAnalyzer.app/
+          ldid -Sentitlements.plist Payload/BatteryAnalyzer.app/BatteryAnalyzer
+          mkdir -p tipa
+          cp -r Payload/BatteryAnalyzer.app tipa/
+          cp control tipa/
+          cp tipa-Info.plist tipa/Info.plist
+          cd tipa
+          zip -r ../BatteryAnalyzer.tipa BatteryAnalyzer.app control Info.plist
+          cd ..
+          ls -la BatteryAnalyzer.tipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BatteryAnalyzer-tipa
+          path: batteryanalyzer/BatteryAnalyzer.tipa

@@ -3,38 +3,26 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
-	<string>zh_CN</string>
+	<string>en</string>
 	<key>CFBundleDisplayName</key>
 	<string>电池耗电分析</string>
 	<key>CFBundleExecutable</key>
-	<string>BatteryAnalyzer</string>
+	<string>BatteryPanel</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.ntm.batteryanalyzer</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>电池耗电分析</string>
+	<string>BatteryPanel</string>
 	<key>CFBundlePackageType</key>
-	<string>APPL</string>
+	<string>BNDL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
-	<key>LSRequiresIPhoneOS</key>
-	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NTMBatteryPrincipalController</string>
 	<key>MinimumOSVersion</key>
-	<string>15.0</string>
-	<key>UIApplicationSupportsIndirectInputEvents</key>
-	<true/>
-	<key>UILaunchScreen</key>
-	<dict/>
-	<key>UIRequiredDeviceCapabilities</key>
-	<array>
-		<string>arm64</string>
-	</array>
-	<key>UISupportedInterfaceOrientations</key>
-	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-	</array>
+	<string>14.0</string>
 </dict>
 </plist>

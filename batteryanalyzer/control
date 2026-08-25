@@ -1,8 +1,9 @@
 Package: com.ntm.batteryanalyzer
 Name: 电池耗电分析
-Version: 1.0
+Version: 1.0.0
 Architecture: iphoneos-arm64
 Maintainer: yzdmm2024
 Author: yzdmm2024
-Section: Utilities
-Description: 查看电池耗电情况：上次充电结束以来的电量变化、每小时运行 App 数、每 App 耗电排行
+Section: Tweaks
+Description: 电池耗电分析：注入SpringBoard监控每App前台/后台运行时间与电量变化，估算每App耗电，显示电量历史与本次耗电统计
+Depends: mobilesubstrate (>= 0.9.5000), preferenceloader

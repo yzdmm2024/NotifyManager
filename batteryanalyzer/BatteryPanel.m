@@ -247,24 +247,38 @@ static NSString *NTM_appName(NSString *bundleId) {
     _currentLevel = (lv < 0) ? -1 : (NSInteger)(lv * 100 + 0.5);
     _charging = [_data[@"charging"] boolValue];
 
-    // App 列表：按前台时间排序
+    // App 列表：按加权时间（前台+后台×0.3）排序，估算每 App 耗电
     NSDictionary *apps = _data[@"apps"];
+    NSInteger endLevel = [_data[@"chargeEndLevel"] integerValue];
+    NSInteger totalDrain = (endLevel > 0 && _currentLevel >= 0) ? (endLevel - _currentLevel) : 0;
+    if (totalDrain < 0) totalDrain = 0;
     NSMutableArray *list = [NSMutableArray array];
+    double totalWeight = 0;
     for (NSString *bid in apps) {
         NSDictionary *info = apps[bid];
         double fg = [info[@"foreground"] doubleValue];
         double bg = [info[@"background"] doubleValue];
         if (fg > 0 || bg > 0) {
-            [list addObject:@{@"id": bid, @"fg": @(fg), @"bg": @(bg)}];
+            double weight = fg + bg * 0.3;
+            [list addObject:@{@"id": bid, @"fg": @(fg), @"bg": @(bg), @"weight": @(weight)}];
+            totalWeight += weight;
         }
     }
     [list sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
-        double wa = [a[@"fg"] doubleValue] + [a[@"bg"] doubleValue] * 0.3;
-        double wb = [b[@"fg"] doubleValue] + [b[@"bg"] doubleValue] * 0.3;
+        double wa = [a[@"weight"] doubleValue];
+        double wb = [b[@"weight"] doubleValue];
         if (wa == wb) return NSOrderedSame;
         return wa > wb ? NSOrderedAscending : NSOrderedDescending;
     }];
-    _appList = list;
+    NSMutableArray *finalList = [NSMutableArray array];
+    for (NSDictionary *a in list) {
+        double weight = [a[@"weight"] doubleValue];
+        NSInteger drain = (totalWeight > 0) ? (NSInteger)lround(totalDrain * weight / totalWeight) : 0;
+        NSMutableDictionary *ma = [a mutableCopy];
+        ma[@"drain"] = @(drain);
+        [finalList addObject:ma];
+    }
+    _appList = finalList;
 
     // 电量历史：过滤相邻相同电量，倒序最新在前
     NSArray *hist = _data[@"batteryHistory"];
@@ -332,10 +346,20 @@ static NSString *NTM_appName(NSString *bundleId) {
     } else if (indexPath.section == 1) {
         if (_appList.count) {
             NSDictionary *a = _appList[indexPath.row];
-            cell.titleLabel.text = NTM_appName(a[@"id"]);
             NSInteger fg = (NSInteger)([a[@"fg"] doubleValue] / 60);
             NSInteger bg = (NSInteger)([a[@"bg"] doubleValue] / 60);
-            cell.valueLabel.text = [NSString stringWithFormat:@"前台 %ld分 · 后台 %ld分", (long)fg, (long)bg];
+            NSInteger drain = [a[@"drain"] integerValue];
+            cell.titleLabel.text = [NSString stringWithFormat:@"%@ · 前台 %ld分 · 后台 %ld分",
+                                    NTM_appName(a[@"id"]), (long)fg, (long)bg];
+            if (drain > 0) {
+                cell.valueLabel.text = [NSString stringWithFormat:@"耗电 %ld%%", (long)drain];
+                cell.valueLabel.textColor = [UIColor systemRedColor];
+                cell.valueLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightBold];
+            } else {
+                cell.valueLabel.text = @"";
+                cell.valueLabel.textColor = [UIColor colorWithWhite:0.12 alpha:1];
+                cell.valueLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+            }
         } else {
             cell.titleLabel.text = @"暂无数据（安装后需运行一段时间积累）";
             cell.valueLabel.text = @"";

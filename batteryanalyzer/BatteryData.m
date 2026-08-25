@@ -29,18 +29,17 @@
         @"/private/var/mobile/Library/Logs",
         @"/var/db",
         @"/private/var/db",
-        @"/var/mobile/Library/Preferences",
-        @"/private/var/mobile/Library/Preferences",
     ];
     NSFileManager *fm = [NSFileManager defaultManager];
     for (NSString *root in roots) {
         NSDirectoryEnumerator *en = [fm enumeratorAtPath:root];
         for (NSString *rel in en) {
             NSString *lower = rel.lowercaseString;
+            if ([lower hasSuffix:@".plist"] || [lower hasSuffix:@".plist.gz"]) continue; // 排除 plist 配置
+            if ([lower containsString:@"powerlogd"]) continue; // 排除守护进程配置
             BOOL match = [lower hasSuffix:@".plsql"] || [lower hasSuffix:@".plsql.gz"] ||
                          [lower hasSuffix:@".epsql"] || [lower hasSuffix:@".epsql.gz"] ||
-                         [lower hasSuffix:@".powerlog"] || [lower containsString:@"powerlog"] ||
-                         [lower containsString:@"batterystats"] || [lower containsString:@"batteryusage"];
+                         [lower hasSuffix:@".powerlog"] || [lower containsString:@"powerlog"];
             if (match) {
                 NSString *full = [root stringByAppendingPathComponent:rel];
                 BOOL isDir = NO;
@@ -72,13 +71,19 @@
         NSMutableString *diag = [NSMutableString stringWithString:@"未找到 Powerlog 数据库。\n"];
         [diag appendFormat:@"iOS 版本：%@\n", [[UIDevice currentDevice] systemVersion]];
         [diag appendFormat:@"当前电量：%ld%%\n", (long)ioLevel];
+        NSString *logsDir = @"/var/mobile/Library/Logs";
+        NSArray *subs = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:logsDir error:nil];
+        [diag appendFormat:@"Logs 目录 %lu 个子目录/文件：\n", (unsigned long)subs.count];
+        for (NSString *s in subs) {
+            [diag appendFormat:@"  - %@\n", s];
+        }
         if (_relatedFiles.count) {
             [diag appendFormat:@"扫描到 %lu 个相关文件：\n", (unsigned long)_relatedFiles.count];
             for (NSString *f in _relatedFiles) {
                 [diag appendFormat:@"  - %@\n", f];
             }
         } else {
-            [diag appendString:@"未扫描到任何相关文件（.PLSQL/.EPSQL/powerlog/batterystats）。\n"];
+            [diag appendString:@"未扫描到任何相关文件（.PLSQL/.EPSQL/powerlog）。\n"];
         }
         _errorMessage = diag;
         return;

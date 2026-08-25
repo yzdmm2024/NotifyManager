@@ -21,24 +21,55 @@
 }
 
 // 找到最新的 Powerlog 数据库（每次重启生成一个新文件，取最新）
+// 尝试多个可能的路径，文件名大小写不敏感，支持 .PLSQL 和 .PLSQL.gz
 - (NSString *)latestPowerlogPath {
-    NSString *dir = @"/var/mobile/Library/Logs/CrashReporter";
-    NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
-    NSMutableArray *pls = [NSMutableArray array];
-    for (NSString *f in files) {
-        if ([f hasPrefix:@"Powerlog_"] && [f hasSuffix:@".PLSQL"]) {
-            [pls addObject:f];
+    NSArray *dirs = @[
+        @"/var/mobile/Library/Logs/CrashReporter",
+        @"/private/var/mobile/Library/Logs/CrashReporter",
+        @"/var/mobile/Library/Logs/Powerlog",
+        @"/private/var/mobile/Library/Logs/Powerlog",
+        @"/var/mobile/Library/Logs",
+    ];
+    NSMutableArray *candidates = [NSMutableArray array];
+    for (NSString *dir in dirs) {
+        NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
+        for (NSString *f in files) {
+            NSString *lower = f.lowercaseString;
+            if ([lower hasPrefix:@"powerlog_"] && ([lower hasSuffix:@".plsql"] || [lower hasSuffix:@".plsql.gz"])) {
+                [candidates addObject:[dir stringByAppendingPathComponent:f]];
+            }
         }
     }
-    [pls sortUsingSelector:@selector(compare:)];
-    if (!pls.count) return nil;
-    return [dir stringByAppendingPathComponent:pls.lastObject];
+    [candidates sortUsingSelector:@selector(compare:)];
+    return candidates.lastObject;
 }
 
 - (void)loadData {
     _errorMessage = nil;
     NSString *path = [self latestPowerlogPath];
-    if (!path) { _errorMessage = @"未找到 Powerlog 数据库"; return; }
+    if (!path) {
+        NSMutableString *diag = [NSMutableString stringWithString:@"未找到 Powerlog 数据库，诊断信息：\n"];
+        NSArray *dirs = @[
+            @"/var/mobile/Library/Logs/CrashReporter",
+            @"/private/var/mobile/Library/Logs/CrashReporter",
+            @"/var/mobile/Library/Logs/Powerlog",
+            @"/var/mobile/Library/Logs",
+        ];
+        for (NSString *dir in dirs) {
+            BOOL isDir = NO;
+            BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:dir isDirectory:&isDir];
+            [diag appendFormat:@"%@：%@\n", dir, exists ? @"存在" : @"不存在"];
+            if (exists) {
+                NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
+                [diag appendFormat:@"  文件数 %lu\n", (unsigned long)files.count];
+                for (NSString *f in [files subarrayWithRange:NSMakeRange(0, MIN(files.count, 6))]) {
+                    [diag appendFormat:@"  - %@\n", f];
+                }
+            }
+        }
+        _errorMessage = diag;
+        return;
+    }
 
     sqlite3 *db = NULL;
     if (sqlite3_open([path UTF8String], &db) != SQLITE_OK) {

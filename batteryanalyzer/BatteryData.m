@@ -63,8 +63,9 @@
     return (NSInteger)(level * 100 + 0.5);
 }
 
-// 从 log-aggregated 分析文件读取电池健康（循环次数/最大容量/设计容量）
-// log-aggregated 是多行 JSON（NDJSON），每行一个 JSON 对象，需逐行解析
+// 从系统分析文件读取电池健康（循环次数/最大容量/设计容量）
+// iOS 15 及以下：log-aggregated-*.ips；iOS 16 起改名为 Analytics-*.ips
+// 文件是多行 JSON（NDJSON），每行一个 JSON 对象，需逐行解析
 - (void)loadBatteryHealth {
     _cycleCount = 0;
     _maxCapacity = 0;
@@ -73,7 +74,8 @@
     NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
     NSString *aggPath = nil;
     for (NSString *f in files) {
-        if ([f hasPrefix:@"log-aggregated-"] && [f hasSuffix:@".ips"]) {
+        if (([f hasPrefix:@"log-aggregated-"] || [f hasPrefix:@"Analytics-"] || [f hasPrefix:@"analytics-"])
+            && ([f hasSuffix:@".ips"] || [f hasSuffix:@".ips.ca.synced"])) {
             aggPath = [dir stringByAppendingPathComponent:f];
             break;
         }

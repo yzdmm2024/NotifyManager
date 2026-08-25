@@ -34,12 +34,13 @@ jobs:
           cp BatteryAnalyzer Payload/BatteryAnalyzer.app/
           cp Info.plist Payload/BatteryAnalyzer.app/
           ldid -Sentitlements.plist Payload/BatteryAnalyzer.app/BatteryAnalyzer
-          mkdir -p tipa
-          cp -r Payload/BatteryAnalyzer.app tipa/
+          # TIPA 结构：.app 必须在 Payload/ 下（TrollStore 要求）
+          mkdir -p tipa/Payload
+          cp -r Payload/BatteryAnalyzer.app tipa/Payload/
           cp control tipa/
           cp tipa-Info.plist tipa/Info.plist
           cd tipa
-          zip -r ../BatteryAnalyzer.tipa BatteryAnalyzer.app control Info.plist
+          zip -r ../BatteryAnalyzer.tipa Payload control Info.plist
           cd ..
           ls -la BatteryAnalyzer.tipa
 

@@ -1,8 +1,6 @@
 #import "BatteryData.h"
 #import <sqlite3.h>
 #import <MobileCoreServices/MobileCoreServices.h>
-#import <IOKit/ps/IOPowerSources.h>
-#import <IOKit/ps/IOPSKeys.h>
 
 @implementation AppUsage
 @end
@@ -48,26 +46,13 @@
     return candidates.lastObject;
 }
 
-// IOKit 读取当前电量（兜底，Powerlog 不可用时仍能显示）
+// 读取当前电量（兜底，Powerlog 不可用时仍能显示）
 - (NSInteger)currentBatteryLevelIOKit {
-    CFTypeRef blob = IOPSCopyPowerSourcesInfo();
-    if (!blob) return -1;
-    CFArrayRef list = IOPSCopyPowerSourcesList(blob);
-    NSInteger level = -1;
-    if (list && CFArrayGetCount(list) > 0) {
-        CFDictionaryRef desc = IOPSGetPowerSourceDescription(blob, CFArrayGetValueAtIndex(list, 0));
-        if (desc) {
-            CFNumberRef cur = CFDictionaryGetValue(desc, CFSTR(kIOPSCurrentCapacityKey));
-            CFNumberRef max = CFDictionaryGetValue(desc, CFSTR(kIOPSMaxCapacityKey));
-            int c = 0, m = 1;
-            if (cur) CFNumberGetValue(cur, kCFNumberIntType, &c);
-            if (max) CFNumberGetValue(max, kCFNumberIntType, &m);
-            if (m > 0) level = (NSInteger)(c * 100 / m);
-        }
-    }
-    if (list) CFRelease(list);
-    CFRelease(blob);
-    return level;
+    UIDevice *dev = [UIDevice currentDevice];
+    dev.batteryMonitoringEnabled = YES;
+    float level = dev.batteryLevel;
+    if (level < 0) return -1;
+    return (NSInteger)(level * 100 + 0.5);
 }
 
 - (void)loadData {

@@ -1,6 +1,8 @@
 #import "BatteryData.h"
 #import <sqlite3.h>
 #import <MobileCoreServices/MobileCoreServices.h>
+#import <IOKit/ps/IOPowerSources.h>
+#import <IOKit/ps/IOPSKeys.h>
 
 @implementation AppUsage
 @end
@@ -20,23 +22,25 @@
     return d;
 }
 
-// 找到最新的 Powerlog 数据库（每次重启生成一个新文件，取最新）
-// 尝试多个可能的路径，文件名大小写不敏感，支持 .PLSQL 和 .PLSQL.gz
+// 找到最新的 Powerlog 数据库：递归扫描 Logs 目录，支持 .PLSQL / .PLSQL.gz / .powerlog
 - (NSString *)latestPowerlogPath {
-    NSArray *dirs = @[
-        @"/var/mobile/Library/Logs/CrashReporter",
-        @"/private/var/mobile/Library/Logs/CrashReporter",
-        @"/var/mobile/Library/Logs/Powerlog",
-        @"/private/var/mobile/Library/Logs/Powerlog",
-        @"/var/mobile/Library/Logs",
-    ];
     NSMutableArray *candidates = [NSMutableArray array];
-    for (NSString *dir in dirs) {
-        NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil];
-        for (NSString *f in files) {
-            NSString *lower = f.lowercaseString;
-            if ([lower hasPrefix:@"powerlog_"] && ([lower hasSuffix:@".plsql"] || [lower hasSuffix:@".plsql.gz"])) {
-                [candidates addObject:[dir stringByAppendingPathComponent:f]];
+    NSArray *roots = @[
+        @"/var/mobile/Library/Logs",
+        @"/private/var/mobile/Library/Logs",
+    ];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *root in roots) {
+        NSDirectoryEnumerator *en = [fm enumeratorAtPath:root];
+        for (NSString *rel in en) {
+            NSString *lower = rel.lowercaseString;
+            if ([lower hasSuffix:@".plsql"] || [lower hasSuffix:@".plsql.gz"] ||
+                [lower hasSuffix:@".powerlog"] || [lower containsString:@"powerlog"]) {
+                NSString *full = [root stringByAppendingPathComponent:rel];
+                BOOL isDir = NO;
+                if ([fm fileExistsAtPath:full isDirectory:&isDir] && !isDir) {
+                    [candidates addObject:full];
+                }
             }
         }
     }
@@ -44,14 +48,39 @@
     return candidates.lastObject;
 }
 
+// IOKit 读取当前电量（兜底，Powerlog 不可用时仍能显示）
+- (NSInteger)currentBatteryLevelIOKit {
+    CFTypeRef blob = IOPSCopyPowerSourcesInfo();
+    if (!blob) return -1;
+    CFArrayRef list = IOPSCopyPowerSourcesList(blob);
+    NSInteger level = -1;
+    if (list && CFArrayGetCount(list) > 0) {
+        CFDictionaryRef desc = IOPSGetPowerSourceDescription(blob, CFArrayGetValueAtIndex(list, 0));
+        if (desc) {
+            CFNumberRef cur = CFDictionaryGetValue(desc, CFSTR(kIOPSCurrentCapacityKey));
+            CFNumberRef max = CFDictionaryGetValue(desc, CFSTR(kIOPSMaxCapacityKey));
+            int c = 0, m = 1;
+            if (cur) CFNumberGetValue(cur, kCFNumberIntType, &c);
+            if (max) CFNumberGetValue(max, kCFNumberIntType, &m);
+            if (m > 0) level = (NSInteger)(c * 100 / m);
+        }
+    }
+    if (list) CFRelease(list);
+    CFRelease(blob);
+    return level;
+}
+
 - (void)loadData {
     _errorMessage = nil;
     NSString *path = [self latestPowerlogPath];
     if (!path) {
-        NSMutableString *diag = [NSMutableString stringWithString:@"未找到 Powerlog 数据库，诊断信息：\n"];
+        NSInteger ioLevel = [self currentBatteryLevelIOKit];
+        NSMutableString *diag = [NSMutableString stringWithString:@"未找到 Powerlog 数据库。\n"];
+        [diag appendFormat:@"iOS 版本：%@\n", [[UIDevice currentDevice] systemVersion]];
+        [diag appendFormat:@"当前电量（IOKit）：%ld%%\n", (long)ioLevel];
+        [diag appendString:@"已扫描的目录：\n"];
         NSArray *dirs = @[
             @"/var/mobile/Library/Logs/CrashReporter",
-            @"/private/var/mobile/Library/Logs/CrashReporter",
             @"/var/mobile/Library/Logs/Powerlog",
             @"/var/mobile/Library/Logs",
         ];

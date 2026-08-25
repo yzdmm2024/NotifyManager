@@ -348,41 +348,89 @@ static NSCache *NTM_iconCache(void) {
     return cache;
 }
 
-static NSArray *NTM_allApps(void) {
-    static NSArray *apps = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        Class wsClass = NSClassFromString(@"LSApplicationWorkspace");
-        if (wsClass) {
-            id ws = [wsClass performSelector:@selector(defaultWorkspace)];
-            if (ws && [ws respondsToSelector:@selector(allApplications)]) {
-                apps = [ws performSelector:@selector(allApplications)];
+// 从 App Bundle 直接读取图标 PNG（越狱环境 Settings 可读其他 App Bundle，不依赖私有图标 API，最可靠）
+static UIImage *NTM_iconFromBundle(NSString *bundleId) {
+    @try {
+        Class proxyClass = NSClassFromString(@"LSApplicationProxy");
+        if (!proxyClass) return nil;
+        id proxy = [proxyClass performSelector:@selector(applicationProxyForIdentifier:) withObject:bundleId];
+        if (!proxy) return nil;
+        NSURL *url = [proxy valueForKey:@"bundleURL"];
+        if (![url isKindOfClass:[NSURL class]]) return nil;
+        NSString *path = [url path];
+        if (!path.length) return nil;
+        NSBundle *bundle = [NSBundle bundleWithPath:path];
+        if (!bundle) return nil;
+        NSDictionary *info = bundle.infoDictionary;
+        if (!info) return nil;
+
+        // 收集图标文件名（CFBundleIcons → CFBundlePrimaryIcon → CFBundleIconFiles，兼容旧格式）
+        NSMutableArray *names = [NSMutableArray array];
+        NSDictionary *icons = info[@"CFBundleIcons"];
+        NSDictionary *primary = icons[@"CFBundlePrimaryIcon"];
+        NSArray *files = primary[@"CFBundleIconFiles"];
+        if ([files isKindOfClass:[NSArray class]]) [names addObjectsFromArray:files];
+        files = info[@"CFBundleIconFiles"];
+        if ([files isKindOfClass:[NSArray class]]) [names addObjectsFromArray:files];
+        NSString *single = info[@"CFBundleIconFile"];
+        if ([single isKindOfClass:[NSString class]]) [names addObject:single];
+
+        CGFloat scale = [UIScreen mainScreen].scale;
+        for (NSString *name in names) {
+            for (int s = (int)scale; s >= 1; s--) {
+                NSString *scaled = (s > 1) ? [NSString stringWithFormat:@"%@@%dx", name, s] : name;
+                NSString *p = [bundle pathForResource:scaled ofType:@"png"];
+                if (!p) continue;
+                UIImage *img = [UIImage imageWithContentsOfFile:p];
+                if (img) return img;
             }
         }
-    });
-    return apps;
+    } @catch (NSException *e) {
+        return nil;
+    }
+    return nil;
+}
+
+// 兜底占位图标：彩色圆形 + App 首字母（真实图标加载失败时保证界面不空）
+static UIImage *NTM_letterIcon(NSString *bundleId, NSString *name) {
+    NSString *letter = @"?";
+    if (name.length) {
+        letter = [name substringToIndex:1];
+    } else if (bundleId.length) {
+        letter = [bundleId substringToIndex:1];
+    }
+    letter = [letter uppercaseString];
+
+    CGFloat hue = ([bundleId hash] % 360) / 360.0;
+    UIColor *color = [UIColor colorWithHue:hue saturation:0.4 brightness:0.85 alpha:1];
+
+    CGFloat size = 160;
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(size, size), NO, 0);
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    CGContextSetFillColorWithColor(ctx, color.CGColor);
+    CGContextFillEllipseInRect(ctx, CGRectMake(0, 0, size, size));
+    NSDictionary *attrs = @{
+        NSFontAttributeName: [UIFont boldSystemFontOfSize:size * 0.5],
+        NSForegroundColorAttributeName: [UIColor whiteColor],
+    };
+    CGSize ts = [letter sizeWithAttributes:attrs];
+    [letter drawAtPoint:CGPointMake((size - ts.width) / 2, (size - ts.height) / 2) withAttributes:attrs];
+    UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return img;
 }
 
 // 获取 App 图标（带缓存，失败返回 nil）
-// 依次尝试：UIKit 私有方法 → _LSCopyApplicationIcon → 遍历应用列表，全部失败返回 nil
+// 依次尝试：Bundle 直读 PNG → _LSCopyApplicationIcon → UIKit 私有方法 → LSApplicationProxy iconData
 static UIImage *NTM_appIcon(NSString *bundleId) {
     if (!bundleId.length) return nil;
     UIImage *cached = [NTM_iconCache() objectForKey:bundleId];
     if (cached) return cached;
 
     UIImage *icon = nil;
-    @try {
-        // 方法1: UIKit 私有方法 +[UIImage _applicationIconImageForBundleIdentifier:format:scale:]（最可靠）
-        Class cls = [UIImage class];
-        SEL sel = NSSelectorFromString(@"_applicationIconImageForBundleIdentifier:format:scale:");
-        if ([cls respondsToSelector:sel]) {
-            typedef UIImage *(*IconFn)(id, SEL, NSString *, int, CGFloat);
-            IconFn fn = (IconFn)[cls methodForSelector:sel];
-            icon = fn(cls, sel, bundleId, 2, [UIScreen mainScreen].scale);
-        }
-    } @catch (NSException *e) {
-        icon = nil;
-    }
+
+    // 方法1: 直接从 App Bundle 读取图标 PNG（不依赖私有图标 API，越狱环境最可靠）
+    icon = NTM_iconFromBundle(bundleId);
 
     if (!icon) {
         @try {
@@ -403,28 +451,45 @@ static UIImage *NTM_appIcon(NSString *bundleId) {
     }
 
     if (!icon) {
-        // 方法3: 遍历应用列表（旧系统 LSApplicationProxy 有 icon 方法）
-        NSArray *apps = NTM_allApps();
-        for (id proxy in apps) {
-            NSString *bid = [proxy valueForKey:@"bundleIdentifier"];
-            if (![bid isEqualToString:bundleId]) continue;
-            @try {
-                if ([proxy respondsToSelector:@selector(icon)]) {
-                    id i = [proxy performSelector:@selector(icon)];
-                    if ([i isKindOfClass:[UIImage class]]) icon = i;
-                }
-            } @catch (NSException *e) {
-                icon = nil;
+        @try {
+            // 方法3: UIKit 私有方法 +[UIImage _applicationIconImageForBundleIdentifier:format:scale:]
+            Class cls = [UIImage class];
+            SEL sel = NSSelectorFromString(@"_applicationIconImageForBundleIdentifier:format:scale:");
+            if ([cls respondsToSelector:sel]) {
+                typedef UIImage *(*IconFn)(id, SEL, NSString *, int, CGFloat);
+                IconFn fn = (IconFn)[cls methodForSelector:sel];
+                icon = fn(cls, sel, bundleId, 2, [UIScreen mainScreen].scale);
             }
-            if (icon) break;
+        } @catch (NSException *e) {
+            icon = nil;
+        }
+    }
+
+    if (!icon) {
+        @try {
+            // 方法4: LSApplicationProxy iconDataForVariant:withOptions:（int 参数，用 methodForSelector 直接调用）
+            Class proxyClass = NSClassFromString(@"LSApplicationProxy");
+            if (proxyClass) {
+                id proxy = [proxyClass performSelector:@selector(applicationProxyForIdentifier:) withObject:bundleId];
+                SEL sel = NSSelectorFromString(@"iconDataForVariant:withOptions:");
+                if (proxy && [proxy respondsToSelector:sel]) {
+                    typedef NSData *(*IconDataFn)(id, SEL, int, int);
+                    IconDataFn fn = (IconDataFn)[proxy methodForSelector:sel];
+                    NSData *data = fn(proxy, sel, 2, 0);
+                    if ([data isKindOfClass:[NSData class]] && data.length) {
+                        icon = [UIImage imageWithData:data];
+                    }
+                }
+            }
+        } @catch (NSException *e) {
+            icon = nil;
         }
     }
 
     if (icon) {
         [NTM_iconCache() setObject:icon forKey:bundleId];
-        return icon;
     }
-    return nil;
+    return icon;
 }
 
 // 日期格式化缓存（避免在 cellForRow 里反复创建）
@@ -634,6 +699,9 @@ static NSDateFormatter *NTM_formatter(NSString *fmt) {
             NSInteger drain = [a[@"drain"] integerValue];
             cell.titleLabel.text = NTM_appName(a[@"id"]);
             cell.iconView.image = NTM_appIcon(a[@"id"]);
+            if (!cell.iconView.image) {
+                cell.iconView.image = NTM_letterIcon(a[@"id"], cell.titleLabel.text);
+            }
             cell.subtitleLabel.hidden = NO;
             if (bg > 0) {
                 cell.subtitleLabel.text = [NSString stringWithFormat:@"前台 %ld分 · 后台 %ld分", (long)fg, (long)bg];
@@ -723,7 +791,7 @@ static NSDateFormatter *NTM_formatter(NSString *fmt) {
     NSArray *hist = _data[@"batteryHistory"];
     if (upd) {
         NSString *t = [NTM_formatter(@"MM-dd HH:mm:ss") stringFromDate:[NSDate dateWithTimeIntervalSince1970:[upd doubleValue]]];
-        cell.valLabels[3].text = [NSString stringWithFormat:@"%@ · %ld App · %ld 条电量",
+        cell.valLabels[3].text = [NSString stringWithFormat:@"更新于 %@ · %ld 个 App · %ld 次电量变化",
                                   t, (long)apps.count, (long)hist.count];
     } else {
         cell.valLabels[3].text = @"Tweak 未运行（重启 SpringBoard 生效）";

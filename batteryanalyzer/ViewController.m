@@ -80,8 +80,11 @@
 
 - (void)configOverviewCell:(UITableViewCell *)cell row:(NSInteger)row {
     if (_data.errorMessage) {
-        cell.textLabel.text = @"读取失败";
-        cell.detailTextLabel.text = _data.errorMessage;
+        cell.textLabel.text = _data.errorMessage;
+        cell.textLabel.numberOfLines = 0;
+        cell.textLabel.font = [UIFont systemFontOfSize:13];
+        cell.textLabel.textColor = [UIColor systemRedColor];
+        cell.detailTextLabel.text = nil;
         return;
     }
     switch (row) {

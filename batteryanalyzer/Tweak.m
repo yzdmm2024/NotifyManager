@@ -89,17 +89,17 @@ static void NTM_tick(void) {
     NTM_save(data);
 }
 
-// hook SBApplicationController applicationController:appProcessStateDidChange:
-// arg2: FBApplicationProcess（bundleIdentifier），arg3: FBProcessState（taskState: 1=前台 2=后台）
-static void (*orig_appProcessStateDidChange)(id, SEL, id, id, id);
-static void hook_appProcessStateDidChange(id self, SEL _cmd, id controller, id process, id state) {
-    orig_appProcessStateDidChange(self, _cmd, controller, process, state);
+// hook SBMainWorkspace process:stateDidChangeFromState:toState:
+// arg1: FBApplicationProcess（bundleIdentifier），arg3: FBProcessState（visibility: Foreground/Background）
+static void (*orig_processStateDidChange)(id, SEL, id, id, id);
+static void hook_processStateDidChange(id self, SEL _cmd, id process, id fromState, id toState) {
+    orig_processStateDidChange(self, _cmd, process, fromState, toState);
     NSString *bundleId = [process valueForKey:@"bundleIdentifier"];
     if (![bundleId isKindOfClass:[NSString class]] || !bundleId.length) return;
-    NSInteger taskState = [[state valueForKey:@"taskState"] integerValue];
-    if (taskState == 1) {
+    NSString *visibility = [toState valueForKey:@"visibility"];
+    if ([visibility isEqualToString:@"Foreground"]) {
         g_frontApp = bundleId;
-    } else if (taskState == 2) {
+    } else if ([visibility isEqualToString:@"Background"]) {
         if ([g_frontApp isEqualToString:bundleId]) {
             g_frontApp = nil;
         }
@@ -108,12 +108,12 @@ static void hook_appProcessStateDidChange(id self, SEL _cmd, id controller, id p
 
 __attribute__((constructor))
 static void NTM_init(void) {
-    Class cls = NSClassFromString(@"SBApplicationController");
-    SEL sel = NSSelectorFromString(@"applicationController:appProcessStateDidChange:");
+    Class cls = NSClassFromString(@"SBMainWorkspace");
+    SEL sel = NSSelectorFromString(@"process:stateDidChangeFromState:toState:");
     Method m = class_getInstanceMethod(cls, sel);
     if (m) {
-        orig_appProcessStateDidChange = (void (*)(id, SEL, id, id, id))method_getImplementation(m);
-        method_setImplementation(m, (IMP)hook_appProcessStateDidChange);
+        orig_processStateDidChange = (void (*)(id, SEL, id, id, id))method_getImplementation(m);
+        method_setImplementation(m, (IMP)hook_processStateDidChange);
     }
     dispatch_async(dispatch_get_main_queue(), ^{
         g_timer = [NSTimer timerWithTimeInterval:5.0 repeats:YES block:^(NSTimer *t) {

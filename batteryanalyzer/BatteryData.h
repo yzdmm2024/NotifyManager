@@ -19,6 +19,10 @@
 @property (nonatomic, strong) NSArray<AppUsage *> *appUsages;
 @property (nonatomic, strong) NSArray<HourlyUsage *> *hourlyUsages;
 @property (nonatomic, strong) NSArray<NSString *> *relatedFiles; // 扫描到的所有相关文件
+@property (nonatomic) NSInteger cycleCount;        // 电池循环次数
+@property (nonatomic) NSInteger maxCapacity;       // 最大容量 mAh
+@property (nonatomic) NSInteger designCapacity;    // 设计容量 mAh
+@property (nonatomic, strong) NSArray<NSDictionary *> *selfHistory; // 自记录电量历史
 @property (nonatomic, copy) NSString *errorMessage;
 + (instancetype)shared;
 - (void)loadData;

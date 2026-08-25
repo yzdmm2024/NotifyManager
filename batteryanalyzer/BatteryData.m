@@ -158,8 +158,8 @@
 - (NSString *)appNameForBundleId:(NSString *)bundleId {
     Class proxyClass = NSClassFromString(@"LSApplicationProxy");
     if (proxyClass && [proxyClass respondsToSelector:@selector(applicationProxyForIdentifier:)]) {
-        id proxy = [proxyClass applicationProxyForIdentifier:bundleId];
-        NSString *name = [proxy localizedName];
+        id proxy = [proxyClass performSelector:@selector(applicationProxyForIdentifier:) withObject:bundleId];
+        NSString *name = [proxy performSelector:@selector(localizedName)];
         if (name.length) return name;
     }
     static NSDictionary *map = nil;

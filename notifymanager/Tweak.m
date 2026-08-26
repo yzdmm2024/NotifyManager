@@ -8,8 +8,16 @@
 // 后台断网: FBSceneManager -_noteSceneMovedToBackground: / -_noteSceneMovedToForeground:
 // 设置面板通过 NSUserDefaults suiteName 通信
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <dlfcn.h>
+
+#pragma mark - Preferences 私有类（网络权限同源）
+@interface PSAppDataUsagePolicyCache : NSObject
++ (instancetype)sharedInstance;
+- (void)setUsagePoliciesForBundle:(NSString *)bundleId cellular:(BOOL)cellular wifi:(BOOL)wifi;
+@end
 
 static NSString *NTM_suiteName = @"com.ntm.notifymanager";
 
@@ -158,7 +166,10 @@ static void NTM_applyNetPolicy(NSString *appId, NSInteger policy) {
     BOOL wifi = (policy == 0 || policy == 2);
     @try {
         Class cls = NSClassFromString(@"PSAppDataUsagePolicyCache");
-        if (!cls) cls = NSClassFromString(@"PSAppDataUsagePolicyCache"); // Preferences 已加载
+        if (!cls) {
+            dlopen("/System/Library/PrivateFrameworks/Preferences.framework/Preferences", RTLD_NOW);
+            cls = NSClassFromString(@"PSAppDataUsagePolicyCache");
+        }
         id cache = nil;
         if (cls) {
             @try { cache = [(id)cls performSelector:@selector(sharedInstance)]; } @catch(NSException *e) {}

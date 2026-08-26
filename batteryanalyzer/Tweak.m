@@ -170,7 +170,8 @@ static NSDictionary *NTM_sampleTweakCpu(void) {
             arm_thread_state64_t state;
             mach_msg_type_number_t sc = ARM_THREAD_STATE64_COUNT;
             if (thread_get_state(threads[i], ARM_THREAD_STATE64, (thread_state_t)&state, &sc) != KERN_SUCCESS) continue;
-            uint64_t pc = state.__pc;
+            // arm64/arm64e 的 thread state 布局一致：__x[29](232B)+__fp+__lr+__sp 后即 PC（offset 256）
+            uint64_t pc = *(uint64_t *)((uint8_t *)&state + 256);
             if (!pc) continue;
             total++;
             Dl_info info;

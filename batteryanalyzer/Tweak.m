@@ -183,71 +183,8 @@ static NSArray *NTM_loadedTweaks(void) {
 }
 
 // 采样当前进程所有线程的 CPU 使用率，按线程 PC 归属到各 Tweak dylib
-// 用 thread_info(THREAD_BASIC_INFO) 的 cpu_usage（内核维护的真实 CPU 占比），
-// 比纯 PC 采样计数更准确；无 Tweak 命中时返回 _idle 标记，面板显示"空闲"而非"采样中"
-static NSDictionary *NTM_sampleTweakCpu(void) {
-    NSMutableDictionary *counts = [NSMutableDictionary dictionary];
-    thread_act_array_t threads = NULL;
-    mach_msg_type_number_t threadCount = 0;
-    if (task_threads(mach_task_self(), &threads, &threadCount) != KERN_SUCCESS) return nil;
-    @try {
-        for (int round = 0; round < 2; round++) {
-            for (mach_msg_type_number_t i = 0; i < threadCount; i++) {
-                // 线程实时 CPU 使用率（cpu_usage 单位：百分之一百分比，100 = 1%）
-                thread_basic_info_t basic;
-                mach_msg_type_number_t bc = THREAD_BASIC_INFO_COUNT;
-                double cpu = 0;
-                if (thread_info(threads[i], THREAD_BASIC_INFO, (thread_info_t)&basic, &bc) == KERN_SUCCESS) {
-                    cpu = basic->cpu_usage / 100.0;
-                }
-                // 通过偏移读取 PC（不同 SDK 的 arm_thread_state64_t 字段名不同，用偏移最兼容）
-                // arm64 布局：__x[29](232B)+__fp(8)+__lr(8)+__sp(8)+__pc(8) → PC 在 offset 256
-                arm_thread_state64_t state;
-                mach_msg_type_number_t sc = ARM_THREAD_STATE64_COUNT;
-                uint64_t pc = 0;
-                if (thread_get_state(threads[i], ARM_THREAD_STATE64, (thread_state_t)&state, &sc) == KERN_SUCCESS) {
-                    pc = *(uint64_t *)((uint8_t *)&state + 256);
-                }
-                // 地址范围检查：只处理合理范围内的 PC，防止垃圾地址传给 dladdr 引发段错误（段错误无法被 @try 捕获）
-                if (pc > 0x100000000 && pc < 0x800000000000) {
-                    Dl_info info;
-                    if (dladdr((const void *)pc, &info) && info.dli_fname) {
-                        NSString *name = [NSString stringWithUTF8String:info.dli_fname];
-                        if ([name containsString:@"TweakInject"] || [name containsString:@"DynamicLibraries"]) {
-                            NSString *file = [name lastPathComponent];
-                            counts[file] = @([counts[file] doubleValue] + MAX(cpu, 0.01));
-                        }
-                    }
-                }
-            }
-            usleep(30000);
-        }
-    } @catch (NSException *e) {
-    }
-    for (mach_msg_type_number_t i = 0; i < threadCount; i++) {
-        mach_port_deallocate(mach_task_self(), threads[i]);
-    }
-    vm_deallocate(mach_task_self(), (vm_address_t)threads, threadCount * sizeof(thread_act_t));
-    if (!counts.count) return @{@"_idle": @1};
-    return counts;
-}
-
-static dispatch_queue_t g_cpuQueue = nil;
-
-// 每 60 秒后台采样一次 Tweak CPU，写入 plist 供设置面板读取（首次 60 秒后开始，避开 SpringBoard 启动繁忙期）
-static void NTM_scheduleCpuSample(void) {
-    if (!g_cpuQueue) g_cpuQueue = dispatch_queue_create("com.ntm.battery.cpu", DISPATCH_QUEUE_SERIAL);
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(60 * NSEC_PER_SEC)), g_cpuQueue, ^{
-        @try {
-            NSMutableDictionary *data = NTM_load();
-            data[@"tweakCpu"] = NTM_sampleTweakCpu();
-            data[@"tweakCpuAt"] = @([[NSDate date] timeIntervalSince1970]);
-            NTM_save(data);
-        } @catch (NSException *e) {
-        }
-        NTM_scheduleCpuSample();
-    });
-}
+// Tweak CPU 采样已彻底移除：task_threads/thread_get_state/dladdr 在 iOS 16.6 上会触发段错误，
+// 导致 SpringBoard 崩溃进安全模式（@try 无法捕获段错误），故不再提供该功能
 
 // 执行设置面板发来的续航方案命令（本 Tweak 运行在 SpringBoard 内，私有类可用）
 static void NTM_executeCommand(NSDictionary *cmd) {
@@ -309,22 +246,6 @@ static void NTM_registerCommandListener(void) {
     });
 }
 
-static int g_sampleToken = 0;
-
-// 按需采样：面板打开 Tweak 耗电 Tab 或点刷新时发通知，收到后采样一次写入 plist。
-// 不自动定时采样，避免 SpringBoard 启动期/空闲期频繁遍历线程触发段错误导致安全模式
-static void NTM_registerSampleListener(void) {
-    notify_register_dispatch("com.ntm.battery.sample", &g_sampleToken, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^(int token) {
-        @try {
-            NSMutableDictionary *data = NTM_load();
-            data[@"tweakCpu"] = NTM_sampleTweakCpu();
-            data[@"tweakCpuAt"] = @([[NSDate date] timeIntervalSince1970]);
-            NTM_save(data);
-        } @catch (NSException *e) {
-        }
-    });
-}
-
 __attribute__((constructor))
 static void NTM_init(void) {
     @try {
@@ -344,8 +265,6 @@ static void NTM_init(void) {
                 // NTM_scheduleCpuSample();
                 // 监听续航方案命令
                 NTM_registerCommandListener();
-                // 按需采样：面板打开 Tweak 耗电 Tab 时触发，不自动定时采样
-                NTM_registerSampleListener();
             } @catch (NSException *e) {
             }
         });

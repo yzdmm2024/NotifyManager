@@ -1529,6 +1529,7 @@ static NSDateFormatter *NTM_formatter(NSString *fmt) {
 
 // 读取电池硬件信息（IOKit 私有接口）。不同 iOS 版本服务名/键名不同，逐个尝试
 static NSDictionary *NTM_batteryHw(void) {
+    @try {
     NSMutableDictionary *info = [NSMutableDictionary dictionary];
     NSArray *services = @[@"AppleSmartBattery", @"AppleSmartBatteryManager", @"IOPMPowerSource"];
     for (NSString *svc in services) {
@@ -1560,6 +1561,9 @@ static NSDictionary *NTM_batteryHw(void) {
         if (info.count) break;
     }
     return info;
+    } @catch (NSException *e) {
+        return @{};
+    }
 }
 
 // 读取 Tweak dylib 文件大小（KB）
@@ -1687,6 +1691,7 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
 }
 
 - (void)reloadData {
+    @try {
     NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.ntm.batteryanalyzer.plist"];
     if (d) {
         _data = [d mutableCopy];
@@ -1872,6 +1877,8 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
     _hwRows = hwRows;
 
     [_tableView reloadData];
+    } @catch (NSException *e) {
+    }
 }
 
 #pragma mark - 数据源
@@ -2320,6 +2327,7 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
 #pragma mark - 交互
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    @try {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.section == 1) {
         [self handleTestButton];
@@ -2355,10 +2363,13 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
             [self applyPlan:row[@"key"]];
         }
     }
+    } @catch (NSException *e) {
+    }
 }
 
 // 一键应用续航方案：飞行模式/低电量由 Tweak 在 SpringBoard 内执行，亮度直接设置
 - (void)applyPlan:(NSString *)key {
+    @try {
     if ([key isEqualToString:@"夜间极限待机方案"]) {
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"夜间极限待机方案"
             message:@"将开启飞行模式（断网）并开启低电量模式，可大幅降低夜间待机耗电。确定应用？"
@@ -2413,6 +2424,8 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
             });
         }]];
         [self presentViewController:alert animated:YES completion:nil];
+    }
+    } @catch (NSException *e) {
     }
 }
 

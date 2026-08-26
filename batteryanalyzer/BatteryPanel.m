@@ -1,11 +1,12 @@
-// BatteryPanel.m — 电池耗电分析设置面板
-// 读取 Tweak 记录的数据（/var/mobile/Library/Preferences/com.ntm.batteryanalyzer.plist）
-// 展示：电池总览卡片 + 每 App 耗电排行 + 电量历史
+// BatteryPanel.m — 电池耗电分析设置面板 (1.3.0)
+// 结构：电池总览 → 待机漏电测试 → 智能诊断 → 4 Tab(App排行/Tweak耗电/省电诊断/硬件充电) → 电量24小时趋势
 // 玻璃拟态 UI：柔和渐变背景 + 半透明白色模糊卡片 + 大圆角 + 微弱阴影 + 按压缩放
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dlfcn.h>
+#import <mach-o/dyld.h>
+#import <IOKit/IOKitLib.h>
 
 // PSViewController 是 PreferenceLoader 控制器的正确基类
 @interface PSViewController : UIViewController
@@ -15,24 +16,57 @@
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) NSMutableDictionary *data;
 @property (nonatomic, strong) NSArray *appList;      // 排序后的 app 数组
-@property (nonatomic, strong) NSArray *historyList;  // 电量历史
+@property (nonatomic, strong) NSArray *historyList;  // 电量历史（倒序）
+@property (nonatomic, strong) NSArray *tweakList;    // 已注入 Tweak
+@property (nonatomic, strong) NSArray *saverRows;    // 省电&诊断 行数据
+@property (nonatomic, strong) NSArray *hwRows;       // 硬件&充电 行数据
 @property (nonatomic) NSInteger currentLevel;
 @property (nonatomic) BOOL charging;
 @property (nonatomic) UIDeviceBatteryState batteryState;
 @property (nonatomic) NSInteger totalDrain;   // 排行 App 耗电总和（用于占比进度条）
 @property (nonatomic) NSInteger expandedRow;  // 展开的排行行，-1 表示无
+@property (nonatomic) NSInteger selectedTab;  // 0 App排行 1 Tweak耗电 2 省电诊断 3 硬件充电
+@property (nonatomic) CGFloat drainRate;      // 平均耗电速率 %/h
 @end
 
-// 概览卡片 cell（电池总览）
+// 概览卡片 cell（电池总览：大数字 + 描述 + 迷你卡片 + 警告）
 @interface OverviewCardCell : UITableViewCell
 @property (nonatomic, strong) UIView *cardView;
-@property (nonatomic, strong) UILabel *levelLabel;    // 大号电量百分比
-@property (nonatomic, strong) UILabel *statusLabel;   // 充电状态
-@property (nonatomic, strong) NSMutableArray<UILabel *> *keyLabels;
-@property (nonatomic, strong) NSMutableArray<UILabel *> *valLabels;
+@property (nonatomic, strong) UILabel *levelLabel;      // 大号电量百分比
+@property (nonatomic, strong) UILabel *statusLabel;     // 充电状态
+@property (nonatomic, strong) UILabel *descLabel;       // 上次充电结束/本次消耗/历时
+@property (nonatomic, strong) UILabel *rateValueLabel;  // 平均耗电速率值
+@property (nonatomic, strong) UILabel *rateKeyLabel;
+@property (nonatomic, strong) UILabel *sampleValueLabel; // 采样点值
+@property (nonatomic, strong) UILabel *sampleKeyLabel;
+@property (nonatomic, strong) UILabel *warnLabel;       // 警告
 @end
 
-// 玻璃拟态列表 cell（排行）
+// 操作按钮 cell（待机漏电测试）
+@interface ActionButtonCell : UITableViewCell
+@property (nonatomic, strong) UIView *cardView;
+@property (nonatomic, strong) UILabel *titleLabel;
+@end
+
+// 智能诊断 cell（黄色提示框）
+@interface DiagnosisCell : UITableViewCell
+@property (nonatomic, strong) UIView *boxView;
+@property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, strong) UILabel *descLabel;
+@end
+
+// Tab 切换条
+@interface TabBarView : UIView
+@property (nonatomic, copy) void (^onSelect)(NSInteger index);
+@property (nonatomic) NSInteger selectedIndex;
+@end
+
+@interface TabBarCell : UITableViewCell
+@property (nonatomic, strong) UIView *cardView;
+@property (nonatomic, strong) TabBarView *tabBar;
+@end
+
+// 玻璃拟态列表 cell（排行 / Tweak）
 @interface GlassCell : UITableViewCell
 @property (nonatomic, strong) UIView *cardView;
 @property (nonatomic, strong) UIImageView *iconView;
@@ -56,6 +90,18 @@
 @property (nonatomic, strong) NSMutableArray<UILabel *> *valLabels;
 @end
 
+// 简单键值 cell（省电&硬件 Tab）
+@interface InfoCell : UITableViewCell
+@property (nonatomic, strong) UIView *cardView;
+@property (nonatomic, strong) UILabel *keyLabel;
+@property (nonatomic, strong) UILabel *valueLabel;
+@end
+
+// 分组标题 cell（省电 Tab 内部分组）
+@interface SectionTitleCell : UITableViewCell
+@property (nonatomic, strong) UILabel *titleLabel;
+@end
+
 // 电量历史折线图
 @interface BatteryChartView : UIView
 @property (nonatomic, strong) NSArray *points;  // NSArray<NSDictionary{ts,level}> 时间正序
@@ -69,6 +115,39 @@
 @end
 
 @implementation OverviewCardCell
+
+- (UIView *)makeMiniCardWithValue:(UILabel **)valueOut key:(UILabel **)keyOut {
+    UIView *box = [UIView new];
+    box.translatesAutoresizingMaskIntoConstraints = NO;
+    box.backgroundColor = [UIColor colorWithWhite:0.96 alpha:0.9];
+    box.layer.cornerRadius = 10;
+    UILabel *v = [UILabel new];
+    v.translatesAutoresizingMaskIntoConstraints = NO;
+    v.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+    v.textColor = [UIColor colorWithWhite:0.15 alpha:1];
+    v.textAlignment = NSTextAlignmentCenter;
+    v.adjustsFontSizeToFitWidth = YES;
+    v.minimumScaleFactor = 0.6;
+    [box addSubview:v];
+    UILabel *k = [UILabel new];
+    k.translatesAutoresizingMaskIntoConstraints = NO;
+    k.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+    k.textColor = [UIColor colorWithWhite:0.5 alpha:1];
+    k.textAlignment = NSTextAlignmentCenter;
+    [box addSubview:k];
+    [NSLayoutConstraint activateConstraints:@[
+        [v.topAnchor constraintEqualToAnchor:box.topAnchor constant:10],
+        [v.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:6],
+        [v.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-6],
+        [k.topAnchor constraintEqualToAnchor:v.bottomAnchor constant:2],
+        [k.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:6],
+        [k.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-6],
+        [k.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-10],
+    ]];
+    if (valueOut) *valueOut = v;
+    if (keyOut) *keyOut = k;
+    return box;
+}
 
 - (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
     self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
@@ -94,7 +173,7 @@
 
         _levelLabel = [UILabel new];
         _levelLabel.translatesAutoresizingMaskIntoConstraints = NO;
-        _levelLabel.font = [UIFont systemFontOfSize:40 weight:UIFontWeightBold];
+        _levelLabel.font = [UIFont systemFontOfSize:52 weight:UIFontWeightBold];
         _levelLabel.textColor = [UIColor systemRedColor];
         _levelLabel.adjustsFontSizeToFitWidth = YES;
         _levelLabel.minimumScaleFactor = 0.5;
@@ -106,47 +185,29 @@
         _statusLabel.textColor = [UIColor colorWithWhite:0.4 alpha:1];
         [_cardView addSubview:_statusLabel];
 
-        _keyLabels = [NSMutableArray array];
-        _valLabels = [NSMutableArray array];
-        UILabel *prev = nil;
-        for (int i = 0; i < 4; i++) {
-            UILabel *k = [UILabel new];
-            k.translatesAutoresizingMaskIntoConstraints = NO;
-            k.font = [UIFont systemFontOfSize:13 weight:UIFontWeightRegular];
-            k.textColor = [UIColor colorWithWhite:0.45 alpha:1];
-            [_cardView addSubview:k];
-            [_keyLabels addObject:k];
+        _descLabel = [UILabel new];
+        _descLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        _descLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightRegular];
+        _descLabel.textColor = [UIColor colorWithWhite:0.45 alpha:1];
+        _descLabel.numberOfLines = 2;
+        _descLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+        [_cardView addSubview:_descLabel];
 
-            UILabel *v = [UILabel new];
-            v.translatesAutoresizingMaskIntoConstraints = NO;
-            v.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
-            v.textColor = [UIColor colorWithWhite:0.15 alpha:1];
-            v.textAlignment = NSTextAlignmentRight;
-            v.numberOfLines = 1;
-            v.lineBreakMode = NSLineBreakByClipping;
-            v.adjustsFontSizeToFitWidth = YES;
-            v.minimumScaleFactor = 0.7;
-            [_cardView addSubview:v];
-            [_valLabels addObject:v];
+        UIView *mini1 = [self makeMiniCardWithValue:&_rateValueLabel key:&_rateKeyLabel];
+        UIView *mini2 = [self makeMiniCardWithValue:&_sampleValueLabel key:&_sampleKeyLabel];
+        UIStackView *miniStack = [[UIStackView alloc] initWithArrangedSubviews:@[mini1, mini2]];
+        miniStack.axis = UILayoutConstraintAxisHorizontal;
+        miniStack.distribution = UIStackViewDistributionFillEqually;
+        miniStack.spacing = 10;
+        miniStack.translatesAutoresizingMaskIntoConstraints = NO;
+        [_cardView addSubview:miniStack];
 
-            [NSLayoutConstraint activateConstraints:@[
-                [k.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:18],
-                [k.widthAnchor constraintEqualToConstant:92],
-                [k.centerYAnchor constraintEqualToAnchor:v.centerYAnchor],
-
-                [v.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor constant:-18],
-                [v.leadingAnchor constraintEqualToAnchor:k.trailingAnchor constant:8],
-                [v.centerYAnchor constraintEqualToAnchor:k.centerYAnchor],
-            ]];
-
-            if (prev) {
-                [k.topAnchor constraintEqualToAnchor:prev.bottomAnchor constant:10].active = YES;
-            } else {
-                [k.topAnchor constraintEqualToAnchor:_statusLabel.bottomAnchor constant:16].active = YES;
-            }
-            prev = k;
-        }
-        [prev.bottomAnchor constraintEqualToAnchor:_cardView.bottomAnchor constant:-16].active = YES;
+        _warnLabel = [UILabel new];
+        _warnLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        _warnLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+        _warnLabel.textColor = [UIColor colorWithWhite:0.55 alpha:1];
+        _warnLabel.numberOfLines = 1;
+        [_cardView addSubview:_warnLabel];
 
         [NSLayoutConstraint activateConstraints:@[
             [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:5],
@@ -160,10 +221,23 @@
             [blur.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor],
 
             [_levelLabel.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:18],
-            [_levelLabel.topAnchor constraintEqualToAnchor:_cardView.topAnchor constant:14],
+            [_levelLabel.topAnchor constraintEqualToAnchor:_cardView.topAnchor constant:16],
 
             [_statusLabel.leadingAnchor constraintEqualToAnchor:_levelLabel.trailingAnchor constant:12],
             [_statusLabel.lastBaselineAnchor constraintEqualToAnchor:_levelLabel.lastBaselineAnchor],
+
+            [_descLabel.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:18],
+            [_descLabel.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor constant:-18],
+            [_descLabel.topAnchor constraintEqualToAnchor:_levelLabel.bottomAnchor constant:6],
+
+            [miniStack.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:16],
+            [miniStack.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor constant:-16],
+            [miniStack.topAnchor constraintEqualToAnchor:_descLabel.bottomAnchor constant:12],
+
+            [_warnLabel.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:18],
+            [_warnLabel.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor constant:-18],
+            [_warnLabel.topAnchor constraintEqualToAnchor:miniStack.bottomAnchor constant:10],
+            [_warnLabel.bottomAnchor constraintEqualToAnchor:_cardView.bottomAnchor constant:-14],
         ]];
     }
     return self;
@@ -186,6 +260,234 @@
     [UIView animateWithDuration:0.2 animations:^{
         self.cardView.transform = CGAffineTransformIdentity;
     }];
+}
+
+@end
+
+@implementation ActionButtonCell
+
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
+    self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
+    if (self) {
+        self.backgroundColor = [UIColor clearColor];
+        self.selectionStyle = UITableViewCellSelectionStyleNone;
+
+        _cardView = [UIView new];
+        _cardView.translatesAutoresizingMaskIntoConstraints = NO;
+        _cardView.layer.cornerRadius = 12;
+        _cardView.backgroundColor = [UIColor systemBlueColor];
+        _cardView.layer.shadowColor = [UIColor blackColor].CGColor;
+        _cardView.layer.shadowOpacity = 0.1;
+        _cardView.layer.shadowRadius = 8;
+        _cardView.layer.shadowOffset = CGSizeMake(0, 3);
+        [self.contentView addSubview:_cardView];
+
+        _titleLabel = [UILabel new];
+        _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        _titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+        _titleLabel.textColor = [UIColor whiteColor];
+        _titleLabel.textAlignment = NSTextAlignmentCenter;
+        [_cardView addSubview:_titleLabel];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:5],
+            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-5],
+            [_cardView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:14],
+            [_cardView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-14],
+            [_cardView.heightAnchor constraintEqualToConstant:46],
+
+            [_titleLabel.centerXAnchor constraintEqualToAnchor:_cardView.centerXAnchor],
+            [_titleLabel.centerYAnchor constraintEqualToAnchor:_cardView.centerYAnchor],
+        ]];
+    }
+    return self;
+}
+
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesBegan:touches withEvent:event];
+    [UIView animateWithDuration:0.15 animations:^{
+        self.cardView.transform = CGAffineTransformMakeScale(0.97, 0.97);
+    }];
+}
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesEnded:touches withEvent:event];
+    [UIView animateWithDuration:0.2 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
+        self.cardView.transform = CGAffineTransformIdentity;
+    } completion:nil];
+}
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesCancelled:touches withEvent:event];
+    [UIView animateWithDuration:0.2 animations:^{
+        self.cardView.transform = CGAffineTransformIdentity;
+    }];
+}
+
+@end
+
+@implementation DiagnosisCell
+
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
+    self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
+    if (self) {
+        self.backgroundColor = [UIColor clearColor];
+        self.selectionStyle = UITableViewCellSelectionStyleNone;
+
+        _boxView = [UIView new];
+        _boxView.translatesAutoresizingMaskIntoConstraints = NO;
+        _boxView.backgroundColor = [UIColor colorWithRed:1.0 green:0.98 blue:0.91 alpha:1];
+        _boxView.layer.cornerRadius = 12;
+        _boxView.layer.borderColor = [UIColor colorWithRed:1.0 green:0.87 blue:0.44 alpha:1].CGColor;
+        _boxView.layer.borderWidth = 1;
+        [self.contentView addSubview:_boxView];
+
+        _titleLabel = [UILabel new];
+        _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        _titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+        _titleLabel.textColor = [UIColor colorWithRed:0.62 green:0.42 blue:0.0 alpha:1];
+        [_boxView addSubview:_titleLabel];
+
+        _descLabel = [UILabel new];
+        _descLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        _descLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightRegular];
+        _descLabel.textColor = [UIColor colorWithRed:0.71 green:0.42 blue:0.0 alpha:1];
+        _descLabel.numberOfLines = 0;
+        [_boxView addSubview:_descLabel];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [_boxView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:5],
+            [_boxView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-5],
+            [_boxView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:14],
+            [_boxView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-14],
+
+            [_titleLabel.leadingAnchor constraintEqualToAnchor:_boxView.leadingAnchor constant:14],
+            [_titleLabel.topAnchor constraintEqualToAnchor:_boxView.topAnchor constant:12],
+            [_titleLabel.trailingAnchor constraintEqualToAnchor:_boxView.trailingAnchor constant:-14],
+
+            [_descLabel.leadingAnchor constraintEqualToAnchor:_boxView.leadingAnchor constant:14],
+            [_descLabel.trailingAnchor constraintEqualToAnchor:_boxView.trailingAnchor constant:-14],
+            [_descLabel.topAnchor constraintEqualToAnchor:_titleLabel.bottomAnchor constant:4],
+            [_descLabel.bottomAnchor constraintEqualToAnchor:_boxView.bottomAnchor constant:-12],
+        ]];
+    }
+    return self;
+}
+
+@end
+
+@implementation TabBarView {
+    NSMutableArray<UIButton *> *_buttons;
+    NSMutableArray<UIView *> *_underlines;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        _buttons = [NSMutableArray array];
+        _underlines = [NSMutableArray array];
+        NSArray *titles = @[@"App耗电排行", @"Tweak插件耗电", @"省电&诊断", @"硬件&充电"];
+        UIStackView *stack = [[UIStackView alloc] init];
+        stack.axis = UILayoutConstraintAxisHorizontal;
+        stack.distribution = UIStackViewDistributionFillEqually;
+        stack.translatesAutoresizingMaskIntoConstraints = NO;
+        [self addSubview:stack];
+        [NSLayoutConstraint activateConstraints:@[
+            [stack.topAnchor constraintEqualToAnchor:self.topAnchor],
+            [stack.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+            [stack.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+            [stack.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+        ]];
+        for (int i = 0; i < 4; i++) {
+            UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+            [b setTitle:titles[i] forState:UIControlStateNormal];
+            b.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightRegular];
+            b.tag = i;
+            [b addTarget:self action:@selector(tap:) forControlEvents:UIControlEventTouchUpInside];
+            [stack addArrangedSubview:b];
+            [_buttons addObject:b];
+
+            UIView *line = [UIView new];
+            line.backgroundColor = [UIColor systemBlueColor];
+            line.layer.cornerRadius = 1;
+            line.translatesAutoresizingMaskIntoConstraints = NO;
+            [b addSubview:line];
+            [NSLayoutConstraint activateConstraints:@[
+                [line.bottomAnchor constraintEqualToAnchor:b.bottomAnchor constant:-2],
+                [line.centerXAnchor constraintEqualToAnchor:b.centerXAnchor],
+                [line.widthAnchor constraintEqualToConstant:28],
+                [line.heightAnchor constraintEqualToConstant:2],
+            ]];
+            [_underlines addObject:line];
+        }
+        [self setSelectedIndex:0];
+    }
+    return self;
+}
+
+- (void)tap:(UIButton *)b {
+    [self setSelectedIndex:b.tag];
+    if (self.onSelect) self.onSelect(b.tag);
+}
+
+- (void)setSelectedIndex:(NSInteger)index {
+    _selectedIndex = index;
+    for (int i = 0; i < (int)_buttons.count; i++) {
+        UIButton *b = _buttons[i];
+        BOOL active = (i == index);
+        [b setTitleColor:active ? [UIColor systemBlueColor] : [UIColor colorWithWhite:0.45 alpha:1] forState:UIControlStateNormal];
+        b.titleLabel.font = [UIFont systemFontOfSize:13 weight:active ? UIFontWeightSemibold : UIFontWeightRegular];
+        _underlines[i].hidden = !active;
+    }
+}
+
+@end
+
+@implementation TabBarCell
+
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
+    self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
+    if (self) {
+        self.backgroundColor = [UIColor clearColor];
+        self.selectionStyle = UITableViewCellSelectionStyleNone;
+
+        _cardView = [UIView new];
+        _cardView.translatesAutoresizingMaskIntoConstraints = NO;
+        _cardView.layer.cornerRadius = 12;
+        _cardView.layer.shadowColor = [UIColor blackColor].CGColor;
+        _cardView.layer.shadowOpacity = 0.06;
+        _cardView.layer.shadowRadius = 8;
+        _cardView.layer.shadowOffset = CGSizeMake(0, 3);
+        [self.contentView addSubview:_cardView];
+
+        UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialLight]];
+        blur.translatesAutoresizingMaskIntoConstraints = NO;
+        blur.layer.cornerRadius = 12;
+        blur.clipsToBounds = YES;
+        blur.userInteractionEnabled = NO;
+        [_cardView addSubview:blur];
+
+        _tabBar = [TabBarView new];
+        _tabBar.translatesAutoresizingMaskIntoConstraints = NO;
+        [_cardView addSubview:_tabBar];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:5],
+            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-5],
+            [_cardView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:14],
+            [_cardView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-14],
+            [_cardView.heightAnchor constraintEqualToConstant:44],
+
+            [blur.topAnchor constraintEqualToAnchor:_cardView.topAnchor],
+            [blur.bottomAnchor constraintEqualToAnchor:_cardView.bottomAnchor],
+            [blur.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor],
+            [blur.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor],
+
+            [_tabBar.topAnchor constraintEqualToAnchor:_cardView.topAnchor],
+            [_tabBar.bottomAnchor constraintEqualToAnchor:_cardView.bottomAnchor],
+            [_tabBar.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor],
+            [_tabBar.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor],
+        ]];
+    }
+    return self;
 }
 
 @end
@@ -260,13 +562,13 @@
         // 耗电占比进度条
         _progressTrack = [UIView new];
         _progressTrack.translatesAutoresizingMaskIntoConstraints = NO;
-        _progressTrack.layer.cornerRadius = 1.5;
+        _progressTrack.layer.cornerRadius = 2;
         _progressTrack.clipsToBounds = YES;
         _progressTrack.backgroundColor = [UIColor colorWithWhite:0.86 alpha:1];
         [_cardView addSubview:_progressTrack];
 
         _progressFill = [UIView new];
-        _progressFill.layer.cornerRadius = 1.5;
+        _progressFill.layer.cornerRadius = 2;
         _progressFill.backgroundColor = [UIColor systemRedColor];
         [_progressTrack addSubview:_progressFill];
 
@@ -447,6 +749,98 @@
 
             [_collapseLabel.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor constant:-18],
             [_collapseLabel.centerYAnchor constraintEqualToAnchor:_titleLabel.centerYAnchor],
+        ]];
+    }
+    return self;
+}
+
+@end
+
+@implementation InfoCell
+
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
+    self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
+    if (self) {
+        self.backgroundColor = [UIColor clearColor];
+        self.selectionStyle = UITableViewCellSelectionStyleNone;
+
+        _cardView = [UIView new];
+        _cardView.translatesAutoresizingMaskIntoConstraints = NO;
+        _cardView.layer.cornerRadius = 12;
+        _cardView.layer.shadowColor = [UIColor blackColor].CGColor;
+        _cardView.layer.shadowOpacity = 0.05;
+        _cardView.layer.shadowRadius = 8;
+        _cardView.layer.shadowOffset = CGSizeMake(0, 3);
+        [self.contentView addSubview:_cardView];
+
+        UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialLight]];
+        blur.translatesAutoresizingMaskIntoConstraints = NO;
+        blur.layer.cornerRadius = 12;
+        blur.clipsToBounds = YES;
+        blur.userInteractionEnabled = NO;
+        [_cardView addSubview:blur];
+
+        _keyLabel = [UILabel new];
+        _keyLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        _keyLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
+        _keyLabel.textColor = [UIColor colorWithWhite:0.15 alpha:1];
+        [_cardView addSubview:_keyLabel];
+
+        _valueLabel = [UILabel new];
+        _valueLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        _valueLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+        _valueLabel.textColor = [UIColor colorWithWhite:0.15 alpha:1];
+        _valueLabel.textAlignment = NSTextAlignmentRight;
+        _valueLabel.numberOfLines = 1;
+        _valueLabel.adjustsFontSizeToFitWidth = YES;
+        _valueLabel.minimumScaleFactor = 0.7;
+        [_cardView addSubview:_valueLabel];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:4],
+            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-4],
+            [_cardView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:0],
+            [_cardView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:0],
+
+            [blur.topAnchor constraintEqualToAnchor:_cardView.topAnchor],
+            [blur.bottomAnchor constraintEqualToAnchor:_cardView.bottomAnchor],
+            [blur.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor],
+            [blur.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor],
+
+            [_keyLabel.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:18],
+            [_keyLabel.centerYAnchor constraintEqualToAnchor:_cardView.centerYAnchor],
+            [_keyLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_valueLabel.leadingAnchor constant:-8],
+
+            [_valueLabel.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor constant:-18],
+            [_valueLabel.centerYAnchor constraintEqualToAnchor:_cardView.centerYAnchor],
+            [_valueLabel.topAnchor constraintEqualToAnchor:_cardView.topAnchor constant:13],
+            [_valueLabel.bottomAnchor constraintEqualToAnchor:_cardView.bottomAnchor constant:-13],
+        ]];
+    }
+    return self;
+}
+
+@end
+
+@implementation SectionTitleCell
+
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
+    self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
+    if (self) {
+        self.backgroundColor = [UIColor clearColor];
+        self.selectionStyle = UITableViewCellSelectionStyleNone;
+
+        _titleLabel = [UILabel new];
+        _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        _titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+        _titleLabel.textColor = [UIColor colorWithWhite:0.45 alpha:1];
+        [_titleLabel sizeToFit];
+        [self.contentView addSubview:_titleLabel];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [_titleLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:22],
+            [_titleLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:10],
+            [_titleLabel.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-6],
         ]];
     }
     return self;
@@ -936,6 +1330,24 @@ static NSDateFormatter *NTM_formatter(NSString *fmt) {
     return df;
 }
 
+// 读取电池硬件信息（IOKit AppleSmartBattery）
+static NSDictionary *NTM_batteryHw(void) {
+    NSMutableDictionary *info = [NSMutableDictionary dictionary];
+    io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"));
+    if (service) {
+        CFMutableDictionaryRef props = NULL;
+        kern_return_t kr = IORegistryEntryCreateCFProperties(service, &props, kCFAllocatorDefault, 0);
+        if (kr == KERN_SUCCESS && props) {
+            NSDictionary *d = (__bridge_transfer NSDictionary *)props;
+            for (NSString *k in @[@"Amperage", @"Temperature", @"CycleCount", @"AppleRawMaxCapacity", @"DesignCapacity", @"AppleRawCurrentCapacity", @"Voltage", @"ExternalConnected", @"IsCharging"]) {
+                if (d[k]) info[k] = d[k];
+            }
+        }
+        IOObjectRelease(service);
+    }
+    return info;
+}
+
 @implementation NTMBatteryPrincipalController
 
 - (instancetype)init {
@@ -943,6 +1355,7 @@ static NSDateFormatter *NTM_formatter(NSString *fmt) {
     if (self) {
         _data = [NSMutableDictionary dictionary];
         _expandedRow = -1;
+        _selectedTab = 0;
     }
     return self;
 }
@@ -1013,9 +1426,21 @@ static NSDateFormatter *NTM_formatter(NSString *fmt) {
     _batteryState = dev.batteryState;
     _charging = (_batteryState == UIDeviceBatteryStateCharging || _batteryState == UIDeviceBatteryStateFull);
 
+    // 平均耗电速率（自上次充电结束）
+    NSInteger endLevel = [_data[@"chargeEndLevel"] integerValue];
+    NSNumber *chargeEnd = _data[@"lastChargeEnd"];
+    _drainRate = 0;
+    if (endLevel > 0 && chargeEnd && _currentLevel >= 0) {
+        NSTimeInterval dur = [[NSDate date] timeIntervalSince1970] - [chargeEnd doubleValue];
+        if (dur > 60) {
+            NSInteger drain = endLevel - _currentLevel;
+            if (drain < 0) drain = 0;
+            _drainRate = (CGFloat)drain / (dur / 3600.0);
+        }
+    }
+
     // App 列表：按加权时间（前台+后台×0.3）排序，估算每 App 耗电
     NSDictionary *apps = _data[@"apps"];
-    NSInteger endLevel = [_data[@"chargeEndLevel"] integerValue];
     NSInteger totalDrain = (endLevel > 0 && _currentLevel >= 0) ? (endLevel - _currentLevel) : 0;
     if (totalDrain < 0) totalDrain = 0;
     NSMutableArray *list = [NSMutableArray array];
@@ -1073,68 +1498,129 @@ static NSDateFormatter *NTM_formatter(NSString *fmt) {
         _historyList = [_historyList subarrayWithRange:NSMakeRange(0, 48)];
     }
 
+    // 已注入 Tweak 列表
+    _tweakList = _data[@"tweaks"];
+    if (![_tweakList isKindOfClass:[NSArray class]]) _tweakList = @[];
+
+    // 省电&诊断 行数据
+    NSMutableArray *saver = [NSMutableArray array];
+    [saver addObject:@{@"type": @"title", @"text": @"预估续航"}];
+    NSString *screenTime = @"--";
+    if (_drainRate > 0) {
+        CGFloat hours = _currentLevel / _drainRate;
+        NSInteger h = (NSInteger)hours;
+        NSInteger m = (NSInteger)((hours - h) * 60);
+        screenTime = [NSString stringWithFormat:@"约 %ld 小时 %ld 分", (long)h, (long)m];
+    }
+    [saver addObject:@{@"type": @"info", @"key": @"预估亮屏可用", @"value": screenTime}];
+    NSString *nightVal = @"--";
+    NSString *nightColor = @"normal";
+    if (_drainRate > 0) {
+        NSInteger nd = (NSInteger)lround(_drainRate * 8);
+        nightVal = [NSString stringWithFormat:@"约 %ld%%（%@）", (long)nd, nd > 15 ? @"偏高" : @"正常"];
+        nightColor = nd > 15 ? @"orange" : @"green";
+    }
+    [saver addObject:@{@"type": @"info", @"key": @"预估夜间8小时待机掉电", @"value": nightVal, @"color": nightColor}];
+    [saver addObject:@{@"type": @"title", @"text": @"自动扫描结果"}];
+    NSInteger bgApps = 0;
+    for (NSDictionary *a in _appList) {
+        if ([a[@"bg"] doubleValue] > 0) bgApps++;
+    }
+    if (bgApps > 3) {
+        [saver addObject:@{@"type": @"info", @"key": @"后台刷新 App 过多", @"value": @"⚠️", @"color": @"orange"}];
+    } else {
+        [saver addObject:@{@"type": @"info", @"key": @"后台刷新 App 过多", @"value": @"正常", @"color": @"green"}];
+    }
+    [saver addObject:@{@"type": @"info", @"key": @"休眠阻断检测", @"value": @"无异常", @"color": @"green"}];
+    [saver addObject:@{@"type": @"title", @"text": @"续航建议（仅提示，不自动修改）"}];
+    [saver addObject:@{@"type": @"info", @"key": @"夜间极限待机方案", @"value": @">"}];
+    [saver addObject:@{@"type": @"info", @"key": @"日常均衡续航方案", @"value": @">"}];
+    _saverRows = saver;
+
+    // 硬件&充电 行数据
+    NSDictionary *hw = NTM_batteryHw();
+    NSMutableArray *hwRows = [NSMutableArray array];
+    NSNumber *amp = hw[@"Amperage"];
+    if (amp) {
+        [hwRows addObject:@{@"type": @"info", @"key": @"实时放电电流", @"value": [NSString stringWithFormat:@"%ldmA", (long)[amp integerValue]]}];
+    } else {
+        [hwRows addObject:@{@"type": @"info", @"key": @"实时放电电流", @"value": @"--"}];
+    }
+    NSNumber *temp = hw[@"Temperature"];
+    if (temp) {
+        [hwRows addObject:@{@"type": @"info", @"key": @"电池温度", @"value": [NSString stringWithFormat:@"%.1f℃", [temp doubleValue] / 100.0]}];
+    } else {
+        [hwRows addObject:@{@"type": @"info", @"key": @"电池温度", @"value": @"--"}];
+    }
+    NSNumber *cycles = hw[@"CycleCount"];
+    [hwRows addObject:@{@"type": @"info", @"key": @"循环次数", @"value": cycles ? [NSString stringWithFormat:@"%ld次", (long)[cycles integerValue]] : @"--"}];
+    NSNumber *rawMax = hw[@"AppleRawMaxCapacity"];
+    NSNumber *design = hw[@"DesignCapacity"];
+    if (rawMax && design && [design integerValue] > 0) {
+        NSInteger pct = (NSInteger)lround([rawMax doubleValue] / [design doubleValue] * 100);
+        [hwRows addObject:@{@"type": @"info", @"key": @"实际最大容量", @"value": [NSString stringWithFormat:@"%ld%%", (long)pct]}];
+    } else {
+        [hwRows addObject:@{@"type": @"info", @"key": @"实际最大容量", @"value": @"--"}];
+    }
+    BOOL lowPower = [[NSProcessInfo processInfo] isLowPowerModeEnabled];
+    [hwRows addObject:@{@"type": @"info", @"key": @"系统低电量模式", @"value": lowPower ? @"开启" : @"关闭", @"color": lowPower ? @"orange" : @"green"}];
+    _hwRows = hwRows;
+
     [_tableView reloadData];
 }
 
 #pragma mark - 数据源
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 6; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 1;
-    if (section == 1) {
-        NSInteger base = MAX(_appList.count, 1);
-        if (_expandedRow >= 0 && _expandedRow < (NSInteger)_appList.count) return base + 1;
-        return base;
+    switch (section) {
+        case 0: return 1; // 总览
+        case 1: return 1; // 测试按钮
+        case 2: return 1; // 诊断
+        case 3: return 1; // Tab 条
+        case 4: {         // Tab 内容
+            switch (_selectedTab) {
+                case 0: {
+                    NSInteger base = MAX(_appList.count, 1);
+                    if (_expandedRow >= 0 && _expandedRow < (NSInteger)_appList.count) return base + 1;
+                    return base;
+                }
+                case 1: return MAX(_tweakList.count, 1);
+                case 2: return _saverRows.count;
+                case 3: return _hwRows.count;
+            }
+        }
+        case 5: return 1; // 折线图
     }
-    return 1; // 电量历史：单张折线图卡片
+    return 0;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    switch (section) {
-        case 0: return @"电池总览";
-        case 1: return @"app耗电排行";
-        default: return @"电量历史";
-    }
+    if (section == 5) return @"电量24小时趋势";
+    return nil;
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+    if (section != 5) return nil;
     UIView *v = [UIView new];
     v.backgroundColor = [UIColor clearColor];
     UILabel *label = [UILabel new];
     label.translatesAutoresizingMaskIntoConstraints = NO;
     label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
     label.textColor = [UIColor colorWithWhite:0.4 alpha:1];
-    label.text = [self tableView:tableView titleForHeaderInSection:section];
+    label.text = @"电量24小时趋势";
     [v addSubview:label];
     [NSLayoutConstraint activateConstraints:@[
         [label.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:22],
         [label.centerYAnchor constraintEqualToAnchor:v.centerYAnchor],
     ]];
-
-    // 排行表头右侧显示本次充电后总耗电
-    if (section == 1) {
-        NSInteger endLevel = [_data[@"chargeEndLevel"] integerValue];
-        NSInteger totalDrain = (endLevel > 0 && _currentLevel >= 0) ? (endLevel - _currentLevel) : 0;
-        if (totalDrain < 0) totalDrain = 0;
-        if (totalDrain > 0) {
-            UILabel *right = [UILabel new];
-            right.translatesAutoresizingMaskIntoConstraints = NO;
-            right.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
-            right.textColor = [UIColor systemRedColor];
-            right.text = [NSString stringWithFormat:@"共消耗 %ld%%", (long)totalDrain];
-            [v addSubview:right];
-            [NSLayoutConstraint activateConstraints:@[
-                [right.trailingAnchor constraintEqualToAnchor:v.trailingAnchor constant:-22],
-                [right.centerYAnchor constraintEqualToAnchor:v.centerYAnchor],
-            ]];
-        }
-    }
     return v;
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
-    return 34;
+    if (section == 5) return 30;
+    return 0;
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
@@ -1142,44 +1628,116 @@ static NSDateFormatter *NTM_formatter(NSString *fmt) {
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section == 0) {
-        OverviewCardCell *cell = [tableView dequeueReusableCellWithIdentifier:@"overview"];
-        if (!cell) cell = [[OverviewCardCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"overview"];
-        [self configOverviewCell:cell];
-        return cell;
-    }
-
-    if (indexPath.section == 2) {
-        BatteryChartCell *cell = [tableView dequeueReusableCellWithIdentifier:@"chart"];
-        if (!cell) cell = [[BatteryChartCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"chart"];
-        [self configChartCell:cell];
-        return cell;
-    }
-
-    // 排行详情行（点击展开）
-    if (_expandedRow >= 0 && indexPath.row == _expandedRow + 1) {
-        GlassDetailCell *dcell = [tableView dequeueReusableCellWithIdentifier:@"glassDetail"];
-        if (!dcell) dcell = [[GlassDetailCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"glassDetail"];
-        NSDictionary *a = _appList[_expandedRow];
-        NSInteger fg = (NSInteger)([a[@"fg"] doubleValue] / 60);
-        NSInteger bg = (NSInteger)([a[@"bg"] doubleValue] / 60);
-        NSInteger drain = [a[@"drain"] integerValue];
-        dcell.titleLabel.text = [NSString stringWithFormat:@"%@ 详情", NTM_appName(a[@"id"])];
-        dcell.keyLabels[0].text = @"前台使用";
-        dcell.valLabels[0].text = [NSString stringWithFormat:@"%ld 分钟", (long)fg];
-        dcell.keyLabels[1].text = @"后台使用";
-        dcell.valLabels[1].text = [NSString stringWithFormat:@"%ld 分钟", (long)bg];
-        dcell.keyLabels[2].text = @"耗电占比";
-        if (_totalDrain > 0) {
-            dcell.valLabels[2].text = [NSString stringWithFormat:@"%ld%%（占排行总耗电）", (long)lround((double)drain / _totalDrain * 100)];
-        } else {
-            dcell.valLabels[2].text = @"--";
+    switch (indexPath.section) {
+        case 0: {
+            OverviewCardCell *cell = [tableView dequeueReusableCellWithIdentifier:@"overview"];
+            if (!cell) cell = [[OverviewCardCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"overview"];
+            [self configOverviewCell:cell];
+            return cell;
         }
-        return dcell;
+        case 1: {
+            ActionButtonCell *cell = [tableView dequeueReusableCellWithIdentifier:@"action"];
+            if (!cell) cell = [[ActionButtonCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"action"];
+            cell.titleLabel.text = _data[@"testStartTime"] ? @"🔋 查看待机漏电测试结果" : @"🔋 开始待机漏电测试";
+            return cell;
+        }
+        case 2: {
+            DiagnosisCell *cell = [tableView dequeueReusableCellWithIdentifier:@"diag"];
+            if (!cell) cell = [[DiagnosisCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"diag"];
+            cell.titleLabel.text = @"🔍 自动漏电诊断";
+            cell.descLabel.text = [self diagnosisText];
+            return cell;
+        }
+        case 3: {
+            TabBarCell *cell = [tableView dequeueReusableCellWithIdentifier:@"tabbar"];
+            if (!cell) cell = [[TabBarCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"tabbar"];
+            cell.tabBar.selectedIndex = _selectedTab;
+            __weak typeof(self) weakSelf = self;
+            cell.tabBar.onSelect = ^(NSInteger idx) {
+                __strong typeof(self) s = weakSelf;
+                if (!s) return;
+                s.selectedTab = idx;
+                [s.tableView reloadSections:[NSIndexSet indexSetWithIndex:4] withRowAnimation:UITableViewRowAnimationFade];
+            };
+            return cell;
+        }
+        case 4: {
+            return [self tabContentCellForIndexPath:indexPath tableView:tableView];
+        }
+        case 5: {
+            BatteryChartCell *cell = [tableView dequeueReusableCellWithIdentifier:@"chart"];
+            if (!cell) cell = [[BatteryChartCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"chart"];
+            [self configChartCell:cell];
+            return cell;
+        }
     }
+    return [UITableViewCell new];
+}
 
-    GlassCell *cell = [tableView dequeueReusableCellWithIdentifier:@"glass"];
-    if (!cell) cell = [[GlassCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"glass"];
+// Tab 内容 cell
+- (UITableViewCell *)tabContentCellForIndexPath:(NSIndexPath *)indexPath tableView:(UITableView *)tableView {
+    switch (_selectedTab) {
+        case 0: {
+            // 排行详情行（点击展开）
+            if (_expandedRow >= 0 && indexPath.row == _expandedRow + 1) {
+                GlassDetailCell *dcell = [tableView dequeueReusableCellWithIdentifier:@"glassDetail"];
+                if (!dcell) dcell = [[GlassDetailCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"glassDetail"];
+                NSDictionary *a = _appList[_expandedRow];
+                NSInteger fg = (NSInteger)([a[@"fg"] doubleValue] / 60);
+                NSInteger bg = (NSInteger)([a[@"bg"] doubleValue] / 60);
+                NSInteger drain = [a[@"drain"] integerValue];
+                dcell.titleLabel.text = [NSString stringWithFormat:@"%@ 详情", NTM_appName(a[@"id"])];
+                dcell.keyLabels[0].text = @"前台使用";
+                dcell.valLabels[0].text = [NSString stringWithFormat:@"%ld 分钟", (long)fg];
+                dcell.keyLabels[1].text = @"后台使用";
+                dcell.valLabels[1].text = [NSString stringWithFormat:@"%ld 分钟", (long)bg];
+                dcell.keyLabels[2].text = @"耗电占比";
+                if (_totalDrain > 0) {
+                    dcell.valLabels[2].text = [NSString stringWithFormat:@"%ld%%（占排行总耗电）", (long)lround((double)drain / _totalDrain * 100)];
+                } else {
+                    dcell.valLabels[2].text = @"--";
+                }
+                return dcell;
+            }
+            GlassCell *cell = [tableView dequeueReusableCellWithIdentifier:@"glass"];
+            if (!cell) cell = [[GlassCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"glass"];
+            [self configAppCell:cell atRow:indexPath.row];
+            return cell;
+        }
+        case 1: {
+            GlassCell *cell = [tableView dequeueReusableCellWithIdentifier:@"glass"];
+            if (!cell) cell = [[GlassCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"glass"];
+            [self configTweakCell:cell atRow:indexPath.row];
+            return cell;
+        }
+        case 2: {
+            NSDictionary *row = _saverRows[indexPath.row];
+            if ([row[@"type"] isEqualToString:@"title"]) {
+                SectionTitleCell *cell = [tableView dequeueReusableCellWithIdentifier:@"secTitle"];
+                if (!cell) cell = [[SectionTitleCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"secTitle"];
+                cell.titleLabel.text = row[@"text"];
+                return cell;
+            }
+            InfoCell *cell = [tableView dequeueReusableCellWithIdentifier:@"info"];
+            if (!cell) cell = [[InfoCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"info"];
+            [self configInfoCell:cell withRow:row];
+            return cell;
+        }
+        case 3: {
+            NSDictionary *row = _hwRows[indexPath.row];
+            InfoCell *cell = [tableView dequeueReusableCellWithIdentifier:@"info"];
+            if (!cell) cell = [[InfoCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"info"];
+            [self configInfoCell:cell withRow:row];
+            return cell;
+        }
+    }
+    return [UITableViewCell new];
+}
+
+- (void)configAppCell:(GlassCell *)cell atRow:(NSInteger)row {
+    cell.rankLabel.hidden = NO;
+    cell.progressTrack.hidden = NO;
+    cell.progressLabel.hidden = NO;
     cell.iconView.image = nil;
     cell.subtitleLabel.text = @"";
     cell.subtitleLabel.hidden = YES;
@@ -1189,11 +1747,16 @@ static NSDateFormatter *NTM_formatter(NSString *fmt) {
     cell.progressLabel.text = @"";
 
     if (_appList.count) {
-        NSDictionary *a = _appList[indexPath.row];
+        NSDictionary *a = _appList[row];
         NSInteger fg = (NSInteger)([a[@"fg"] doubleValue] / 60);
         NSInteger bg = (NSInteger)([a[@"bg"] doubleValue] / 60);
         NSInteger drain = [a[@"drain"] integerValue];
         cell.titleLabel.text = NTM_appName(a[@"id"]);
+        cell.rankLabel.text = [NSString stringWithFormat:@"%ld", (long)(row + 1)];
+        if (row == 0) cell.rankLabel.backgroundColor = [UIColor systemRedColor];
+        else if (row == 1) cell.rankLabel.backgroundColor = [UIColor systemOrangeColor];
+        else if (row == 2) cell.rankLabel.backgroundColor = [UIColor systemYellowColor];
+        else cell.rankLabel.backgroundColor = [UIColor systemGrayColor];
         // 先显示字母占位，后台加载真实图标（避免首次进入卡顿）
         cell.currentBundleId = a[@"id"];
         cell.iconView.image = NTM_letterIcon(a[@"id"], cell.titleLabel.text);
@@ -1230,28 +1793,130 @@ static NSDateFormatter *NTM_formatter(NSString *fmt) {
         cell.subtitleLabel.text = @"";
         cell.valueLabel.text = @"";
     }
-    return cell;
 }
 
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (indexPath.section != 1 || !_appList.count) return;
-    if (indexPath.row >= (NSInteger)_appList.count) {
-        // 点击详情行收起
-        _expandedRow = -1;
-    } else if (_expandedRow == indexPath.row) {
-        _expandedRow = -1;
+- (void)configTweakCell:(GlassCell *)cell atRow:(NSInteger)row {
+    cell.rankLabel.hidden = YES;
+    cell.progressTrack.hidden = YES;
+    cell.progressLabel.hidden = YES;
+    cell.iconView.image = nil;
+    cell.valueLabel.textColor = [UIColor colorWithWhite:0.12 alpha:1];
+    cell.valueLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+
+    if (_tweakList.count) {
+        NSString *name = _tweakList[row];
+        NSString *display = [name stringByReplacingOccurrencesOfString:@".dylib" withString:@""];
+        cell.titleLabel.text = display;
+        cell.iconView.image = NTM_letterIcon(name, display);
+        cell.subtitleLabel.hidden = NO;
+        cell.subtitleLabel.text = @"已注入 SpringBoard";
+        cell.valueLabel.text = @"运行中";
+        cell.valueLabel.textColor = [UIColor systemGreenColor];
+        cell.valueLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
     } else {
-        _expandedRow = indexPath.row;
-    }
-    [tableView reloadSections:[NSIndexSet indexSetWithIndex:1] withRowAnimation:UITableViewRowAnimationFade];
-    if (_expandedRow >= 0) {
-        NSIndexPath *detail = [NSIndexPath indexPathForRow:_expandedRow + 1 inSection:1];
-        [tableView scrollToRowAtIndexPath:detail atScrollPosition:UITableViewScrollPositionNone animated:YES];
+        cell.titleLabel.text = @"暂无 Tweak 数据（重启 SpringBoard 生效）";
+        cell.subtitleLabel.text = @"";
+        cell.subtitleLabel.hidden = YES;
+        cell.valueLabel.text = @"";
     }
 }
 
-// 电量历史折线图卡片配置
+- (void)configInfoCell:(InfoCell *)cell withRow:(NSDictionary *)row {
+    cell.keyLabel.text = row[@"key"];
+    cell.valueLabel.text = row[@"value"];
+    NSString *color = row[@"color"];
+    if ([color isEqualToString:@"orange"]) cell.valueLabel.textColor = [UIColor systemOrangeColor];
+    else if ([color isEqualToString:@"green"]) cell.valueLabel.textColor = [UIColor systemGreenColor];
+    else if ([color isEqualToString:@"red"]) cell.valueLabel.textColor = [UIColor systemRedColor];
+    else cell.valueLabel.textColor = [UIColor colorWithWhite:0.15 alpha:1];
+}
+
+- (void)configOverviewCell:(OverviewCardCell *)cell {
+    if (_currentLevel >= 0) {
+        cell.levelLabel.text = [NSString stringWithFormat:@"%ld%%", (long)_currentLevel];
+        cell.levelLabel.textColor = _charging ? [UIColor systemGreenColor] : [UIColor systemRedColor];
+    } else {
+        cell.levelLabel.text = @"--";
+        cell.levelLabel.textColor = [UIColor colorWithWhite:0.4 alpha:1];
+    }
+    cell.statusLabel.text = @"未充电";
+    if (_batteryState == UIDeviceBatteryStateFull) {
+        cell.statusLabel.text = @"已充满";
+    } else if (_batteryState == UIDeviceBatteryStateCharging) {
+        NSNumber *start = _data[@"chargeStart"];
+        if (start) {
+            NSTimeInterval dur = [[NSDate date] timeIntervalSince1970] - [start doubleValue];
+            if (dur > 0) {
+                cell.statusLabel.text = [NSString stringWithFormat:@"充电中 · %ld 分钟", (long)(dur / 60)];
+            } else {
+                cell.statusLabel.text = @"充电中";
+            }
+        } else {
+            cell.statusLabel.text = @"充电中";
+        }
+    }
+
+    // 描述：上次充电结束 + 本次消耗 + 历时
+    NSNumber *chargeEnd = _data[@"lastChargeEnd"];
+    NSInteger endLevel = [_data[@"chargeEndLevel"] integerValue];
+    if (chargeEnd && endLevel > 0 && _currentLevel >= 0) {
+        NSInteger drain = endLevel - _currentLevel;
+        if (drain < 0) drain = 0;
+        NSTimeInterval dur = [[NSDate date] timeIntervalSince1970] - [chargeEnd doubleValue];
+        if (dur < 0) dur = 0;
+        NSInteger totalMin = (NSInteger)(dur / 60);
+        NSInteger h = totalMin / 60;
+        NSInteger m = totalMin % 60;
+        NSString *durText = h > 0 ? [NSString stringWithFormat:@"%ld小时%ld分", (long)h, (long)m] : [NSString stringWithFormat:@"%ld分", (long)m];
+        NSString *endText = [NTM_formatter(@"MM-dd HH:mm") stringFromDate:[NSDate dateWithTimeIntervalSince1970:[chargeEnd doubleValue]]];
+        cell.descLabel.text = [NSString stringWithFormat:@"上次充电结束：%@｜本次消耗 %ld%%，历时 %@", endText, (long)drain, durText];
+    } else {
+        cell.descLabel.text = @"上次充电结束：无记录（完成一次充电后显示）";
+    }
+
+    // 迷你卡片
+    cell.rateKeyLabel.text = @"平均耗电速率";
+    if (_drainRate > 0) {
+        cell.rateValueLabel.text = [NSString stringWithFormat:@"%.1f%% /h", _drainRate];
+        cell.rateValueLabel.textColor = _drainRate > 5 ? [UIColor systemOrangeColor] : [UIColor colorWithWhite:0.15 alpha:1];
+    } else {
+        cell.rateValueLabel.text = @"--";
+        cell.rateValueLabel.textColor = [UIColor colorWithWhite:0.15 alpha:1];
+    }
+    cell.sampleKeyLabel.text = @"电量采样点";
+    NSArray *rawHist = _data[@"batteryHistory"];
+    cell.sampleValueLabel.text = [NSString stringWithFormat:@"%ld次", (long)([rawHist isKindOfClass:[NSArray class]] ? rawHist.count : 0)];
+    cell.sampleValueLabel.textColor = [UIColor colorWithWhite:0.15 alpha:1];
+
+    // 警告
+    if (chargeEnd && endLevel > 0) {
+        cell.warnLabel.text = @"⚠️ 非完整充放电周期，数据仅供参考";
+    } else {
+        cell.warnLabel.text = @"⚠️ 数据不足，请完成一次充电后查看";
+    }
+}
+
+- (NSString *)diagnosisText {
+    NSInteger endLevel = [_data[@"chargeEndLevel"] integerValue];
+    NSNumber *chargeEnd = _data[@"lastChargeEnd"];
+    if (endLevel <= 0 || !chargeEnd || _currentLevel < 0) {
+        return @"数据不足，暂无法诊断。请先完成一次充电后使用。";
+    }
+    NSTimeInterval dur = [[NSDate date] timeIntervalSince1970] - [chargeEnd doubleValue];
+    if (dur <= 60) return @"数据不足，暂无法诊断。请稍后再试。";
+    NSInteger drain = endLevel - _currentLevel;
+    if (drain < 0) drain = 0;
+    CGFloat rate = (CGFloat)drain / (dur / 3600.0);
+    NSString *topApp = _appList.count ? NTM_appName(_appList[0][@"id"]) : @"";
+    if (rate > 5) {
+        return [NSString stringWithFormat:@"平均耗电 %.1f%%/h 偏高；建议重点检查 %@ 后台刷新，同时留意注入 Tweak 唤醒情况。", rate, topApp];
+    } else if (rate > 2) {
+        return [NSString stringWithFormat:@"平均耗电 %.1f%%/h 略高；建议关注后台刷新频繁的 App。", rate];
+    } else {
+        return [NSString stringWithFormat:@"平均耗电 %.1f%%/h 正常，继续保持。", rate];
+    }
+}
+
 - (void)configChartCell:(BatteryChartCell *)cell {
     // 折线图需要时间正序（_historyList 是倒序，反转回来）
     NSArray *ascending = [[_historyList reverseObjectEnumerator] allObjects];
@@ -1268,80 +1933,71 @@ static NSDateFormatter *NTM_formatter(NSString *fmt) {
     }
 }
 
-- (void)configOverviewCell:(OverviewCardCell *)cell {
-    // 大号电量 + 充电状态
-    if (_currentLevel >= 0) {
-        cell.levelLabel.text = [NSString stringWithFormat:@"%ld%%", (long)_currentLevel];
-        cell.levelLabel.textColor = _charging ? [UIColor systemGreenColor] : [UIColor systemRedColor];
-    } else {
-        cell.levelLabel.text = @"--";
-        cell.levelLabel.textColor = [UIColor colorWithWhite:0.4 alpha:1];
+#pragma mark - 交互
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.section == 1) {
+        [self handleTestButton];
+        return;
     }
-    cell.statusLabel.text = @"未充电";
-    if (_batteryState == UIDeviceBatteryStateFull) {
-        cell.statusLabel.text = @"已充满";
-    } else if (_batteryState == UIDeviceBatteryStateCharging) {
-        NSNumber *start = _data[@"chargeStart"];
-        if (start) {
-            NSTimeInterval dur = [[NSDate date] timeIntervalSince1970] - [start doubleValue];
-            if (dur > 0) {
-                NSInteger min = (NSInteger)(dur / 60);
-                cell.statusLabel.text = [NSString stringWithFormat:@"充电中 · %ld 分钟", (long)min];
-            } else {
-                cell.statusLabel.text = @"充电中";
-            }
+    if (indexPath.section == 4 && _selectedTab == 0) {
+        if (!_appList.count) return;
+        if (indexPath.row >= (NSInteger)_appList.count) {
+            _expandedRow = -1;
+        } else if (_expandedRow == indexPath.row) {
+            _expandedRow = -1;
         } else {
-            cell.statusLabel.text = @"充电中";
+            _expandedRow = indexPath.row;
+        }
+        [tableView reloadSections:[NSIndexSet indexSetWithIndex:4] withRowAnimation:UITableViewRowAnimationFade];
+        if (_expandedRow >= 0) {
+            [tableView scrollToRowAtIndexPath:[NSIndexPath indexPathForRow:_expandedRow + 1 inSection:4] atScrollPosition:UITableViewScrollPositionNone animated:YES];
+        }
+        return;
+    }
+    if (indexPath.section == 4 && _selectedTab == 2) {
+        NSDictionary *row = _saverRows[indexPath.row];
+        NSString *key = row[@"key"];
+        if ([key isEqualToString:@"夜间极限待机方案"]) {
+            [self showTip:@"夜间极限待机方案" msg:@"建议：开启飞行模式或关闭蜂窝数据，关闭后台刷新，可大幅降低夜间待机耗电。"];
+        } else if ([key isEqualToString:@"日常均衡续航方案"]) {
+            [self showTip:@"日常均衡续航方案" msg:@"建议：关闭不常用 App 的后台刷新，开启低电量模式，屏幕亮度调至 50% 以下。"];
         }
     }
+}
 
-    // 4 行统计
-    NSArray *keys = @[@"上次充电结束", @"本次耗电", @"本次时长", @"数据状态"];
-    for (int i = 0; i < 4; i++) {
-        cell.keyLabels[i].text = keys[i];
-    }
-
-    // 上次充电结束
-    NSNumber *chargeEnd = _data[@"lastChargeEnd"];
-    cell.valLabels[0].text = chargeEnd ? [NTM_formatter(@"MM-dd HH:mm") stringFromDate:[NSDate dateWithTimeIntervalSince1970:[chargeEnd doubleValue]]] : @"无记录";
-
-    // 本次耗电
-    NSInteger endLevel = [_data[@"chargeEndLevel"] integerValue];
-    if (endLevel > 0 && _currentLevel >= 0) {
-        NSInteger drain = endLevel - _currentLevel;
+- (void)handleTestButton {
+    NSNumber *testStart = _data[@"testStartTime"];
+    if (!testStart) {
+        if (_currentLevel < 0) {
+            [self showTip:@"无法开始测试" msg:@"当前无法读取电量，请稍后再试。"];
+            return;
+        }
+        _data[@"testStartTime"] = @([[NSDate date] timeIntervalSince1970]);
+        _data[@"testStartLevel"] = @(_currentLevel);
+        [_data writeToFile:@"/var/mobile/Library/Preferences/com.ntm.batteryanalyzer.plist" atomically:YES];
+        [self showTip:@"待机漏电测试已开始" msg:@"请锁屏放置 1-2 小时，再回来点击查看结果。"];
+        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1] withRowAnimation:UITableViewRowAnimationFade];
+    } else {
+        NSTimeInterval elapsed = [[NSDate date] timeIntervalSince1970] - [testStart doubleValue];
+        NSInteger startLevel = [_data[@"testStartLevel"] integerValue];
+        NSInteger drain = startLevel - _currentLevel;
         if (drain < 0) drain = 0;
-        cell.valLabels[1].text = [NSString stringWithFormat:@"%ld%% → %ld%%（消耗 %ld%%）", (long)endLevel, (long)_currentLevel, (long)drain];
-        cell.valLabels[1].textColor = (drain > 0) ? [UIColor systemRedColor] : [UIColor colorWithWhite:0.15 alpha:1];
-    } else {
-        cell.valLabels[1].text = @"无记录";
-        cell.valLabels[1].textColor = [UIColor colorWithWhite:0.15 alpha:1];
+        CGFloat rate = (elapsed > 60) ? (CGFloat)drain / (elapsed / 3600.0) : 0;
+        NSString *msg = [NSString stringWithFormat:@"测试时长 %.1f 小时\n掉电 %ld%%\n平均耗电速率 %.1f%%/h", elapsed / 3600.0, (long)drain, rate];
+        [_data removeObjectForKey:@"testStartTime"];
+        [_data removeObjectForKey:@"testStartLevel"];
+        [_data writeToFile:@"/var/mobile/Library/Preferences/com.ntm.batteryanalyzer.plist" atomically:YES];
+        [self showTip:@"待机漏电测试结果" msg:msg];
+        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:1] withRowAnimation:UITableViewRowAnimationFade];
     }
+}
 
-    // 本次时长
-    if (chargeEnd) {
-        NSTimeInterval dur = [[NSDate date] timeIntervalSince1970] - [chargeEnd doubleValue];
-        if (dur < 0) dur = 0;
-        NSInteger totalMin = (NSInteger)(dur / 60);
-        NSInteger h = totalMin / 60;
-        NSInteger m = totalMin % 60;
-        if (h > 0) {
-            cell.valLabels[2].text = [NSString stringWithFormat:@"%ld 小时 %ld 分钟", (long)h, (long)m];
-        } else {
-            cell.valLabels[2].text = [NSString stringWithFormat:@"%ld 分钟", (long)m];
-        }
-    } else {
-        cell.valLabels[2].text = @"无记录";
-    }
-
-    // 数据状态
-    NSNumber *upd = _data[@"lastUpdate"];
-    NSDictionary *apps = _data[@"apps"];
-    if (upd) {
-        NSString *t = [NTM_formatter(@"MM-dd HH:mm:ss") stringFromDate:[NSDate dateWithTimeIntervalSince1970:[upd doubleValue]]];
-        cell.valLabels[3].text = [NSString stringWithFormat:@"更新于 %@ · %ld 个 App", t, (long)apps.count];
-    } else {
-        cell.valLabels[3].text = @"Tweak 未运行（重启 SpringBoard 生效）";
-    }
+- (void)showTip:(NSString *)title msg:(NSString *)msg {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:msg preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"好的" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 @end

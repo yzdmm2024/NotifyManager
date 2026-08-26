@@ -1687,7 +1687,15 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
 }
 
 - (void)refresh {
-    [self reloadData];
+    // 在 Tweak 耗电 Tab 时，先请求 Tweak 采样，等结果写入后再刷新
+    if (_selectedTab == 1) {
+        notify_post("com.ntm.battery.sample");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self reloadData];
+        });
+    } else {
+        [self reloadData];
+    }
 }
 
 - (void)reloadData {
@@ -1972,6 +1980,13 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
                 if (!s) return;
                 s.selectedTab = idx;
                 [s.tableView reloadSections:[NSIndexSet indexSetWithIndex:4] withRowAnimation:UITableViewRowAnimationFade];
+                // 切到 Tweak 耗电 Tab 时请求 Tweak 采样，1.5 秒后刷新显示结果
+                if (idx == 1) {
+                    notify_post("com.ntm.battery.sample");
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        if (s.selectedTab == 1) [s reloadData];
+                    });
+                }
             };
             return cell;
         }
@@ -2161,7 +2176,7 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
             cell.valueLabel.text = @"0%";
             cell.valueLabel.textColor = [UIColor systemGreenColor];
         } else {
-            cell.subtitleLabel.text = [NSString stringWithFormat:@"文件 %@ · 采样中…", size];
+            cell.subtitleLabel.text = [NSString stringWithFormat:@"文件 %@ · 暂无数据（点刷新采样）", size];
             cell.valueLabel.text = @"--";
             cell.valueLabel.textColor = [UIColor colorWithWhite:0.4 alpha:1];
         }
@@ -2176,7 +2191,7 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
 // Tweak 总 CPU 占用文案（含采样时间）
 - (NSString *)tweakTotalCpuText {
     NSDictionary *cpu = _data[@"tweakCpu"];
-    if (![cpu isKindOfClass:[NSDictionary class]] || !cpu.count) return @"采样中…";
+    if (![cpu isKindOfClass:[NSDictionary class]] || !cpu.count) return @"暂无数据（点右上角刷新采样）";
     double total = 0;
     for (NSNumber *v in cpu.allValues) total += [v doubleValue];
     NSNumber *at = _data[@"tweakCpuAt"];

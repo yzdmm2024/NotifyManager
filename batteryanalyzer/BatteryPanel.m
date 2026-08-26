@@ -30,6 +30,12 @@
 @property (nonatomic) CGFloat drainRate;      // 平均耗电速率 %/h
 @end
 
+// 电量环形进度视图（总览卡片左侧圆环）
+@interface BatteryRingView : UIView
+@property (nonatomic) CGFloat progress;   // 0-1
+@property (nonatomic, strong) UIColor *tintColor;
+@end
+
 // 概览卡片 cell（电池总览：大数字 + 描述 + 迷你卡片 + 警告）
 @interface OverviewCardCell : UITableViewCell
 @property (nonatomic, strong) UIView *cardView;
@@ -42,12 +48,6 @@
 @property (nonatomic, strong) UILabel *sampleValueLabel; // 采样点值
 @property (nonatomic, strong) UILabel *sampleKeyLabel;
 @property (nonatomic, strong) UILabel *warnLabel;       // 警告
-@end
-
-// 电量环形进度视图（总览卡片左侧圆环）
-@interface BatteryRingView : UIView
-@property (nonatomic) CGFloat progress;   // 0-1
-@property (nonatomic, strong) UIColor *tintColor;
 @end
 
 // 操作按钮 cell（待机漏电测试）

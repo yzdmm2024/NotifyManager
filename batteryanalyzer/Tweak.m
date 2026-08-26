@@ -181,7 +181,7 @@ static NSDictionary *NTM_sampleTweakCpu(void) {
             mach_msg_type_number_t bc = THREAD_BASIC_INFO_COUNT;
             double cpu = 0;
             if (thread_info(threads[i], THREAD_BASIC_INFO, (thread_info_t)&basic, &bc) == KERN_SUCCESS) {
-                cpu = basic.cpu_usage / 100.0;
+                cpu = basic->cpu_usage / 100.0;
             }
             // 通过 PC 归属到具体 dylib（arm64/arm64e 布局一致：__x[29](232B)+fp+lr+sp 后即 PC，offset 256）
             arm_thread_state64_t state;

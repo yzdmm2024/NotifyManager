@@ -69,6 +69,13 @@ static NSTimeInterval g_lastTick = 0;
 static void NTM_pruneApps(NSMutableDictionary *data);
 static void NTM_executeCommand(NSDictionary *cmd);
 
+// 只执行 30 秒内的新命令，防止重启后执行残留旧命令（避免意外开关飞行模式）
+static BOOL NTM_commandIsFresh(NSDictionary *cmd) {
+    NSNumber *at = cmd[@"at"];
+    if (![at isKindOfClass:[NSNumber class]]) return NO;
+    return ([[NSDate date] timeIntervalSince1970] - [at doubleValue]) < 30;
+}
+
 static void NTM_tick(void) {
     NSMutableDictionary *data = NTM_load();
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
@@ -78,8 +85,11 @@ static void NTM_tick(void) {
 
     // 兜底执行面板发来的续航方案命令（通知丢失时也能在 5 秒内执行）
     NSDictionary *pending = data[@"pendingCommand"];
-    if ([pending isKindOfClass:[NSDictionary class]]) {
+    if ([pending isKindOfClass:[NSDictionary class]] && NTM_commandIsFresh(pending)) {
         NTM_executeCommand(pending);
+    } else if ([pending isKindOfClass:[NSDictionary class]]) {
+        [data removeObjectForKey:@"pendingCommand"]; // 清理残留旧命令
+        NTM_save(data);
     }
 
     NSString *front = NTM_frontmostApp();
@@ -174,34 +184,37 @@ static NSDictionary *NTM_sampleTweakCpu(void) {
     thread_act_array_t threads = NULL;
     mach_msg_type_number_t threadCount = 0;
     if (task_threads(mach_task_self(), &threads, &threadCount) != KERN_SUCCESS) return nil;
-    for (int round = 0; round < 30; round++) {
-        for (mach_msg_type_number_t i = 0; i < threadCount; i++) {
-            // 线程实时 CPU 使用率（cpu_usage 单位：百分之一百分比，100 = 1%）
-            thread_basic_info_t basic;
-            mach_msg_type_number_t bc = THREAD_BASIC_INFO_COUNT;
-            double cpu = 0;
-            if (thread_info(threads[i], THREAD_BASIC_INFO, (thread_info_t)&basic, &bc) == KERN_SUCCESS) {
-                cpu = basic->cpu_usage / 100.0;
-            }
-            // 通过 PC 归属到具体 dylib（arm64/arm64e 布局一致：__x[29](232B)+fp+lr+sp 后即 PC，offset 256）
-            arm_thread_state64_t state;
-            mach_msg_type_number_t sc = ARM_THREAD_STATE64_COUNT;
-            uint64_t pc = 0;
-            if (thread_get_state(threads[i], ARM_THREAD_STATE64, (thread_state_t)&state, &sc) == KERN_SUCCESS) {
-                pc = *(uint64_t *)((uint8_t *)&state + 256);
-            }
-            if (pc) {
-                Dl_info info;
-                if (dladdr((const void *)pc, &info) && info.dli_fname) {
-                    NSString *name = [NSString stringWithUTF8String:info.dli_fname];
-                    if ([name containsString:@"TweakInject"] || [name containsString:@"DynamicLibraries"]) {
-                        NSString *file = [name lastPathComponent];
-                        counts[file] = @([counts[file] doubleValue] + MAX(cpu, 0.01));
+    @try {
+        for (int round = 0; round < 8; round++) {
+            for (mach_msg_type_number_t i = 0; i < threadCount; i++) {
+                // 线程实时 CPU 使用率（cpu_usage 单位：百分之一百分比，100 = 1%）
+                thread_basic_info_t basic;
+                mach_msg_type_number_t bc = THREAD_BASIC_INFO_COUNT;
+                double cpu = 0;
+                if (thread_info(threads[i], THREAD_BASIC_INFO, (thread_info_t)&basic, &bc) == KERN_SUCCESS) {
+                    cpu = basic->cpu_usage / 100.0;
+                }
+                // 通过 PC 归属到具体 dylib（arm64/arm64e 布局一致：__x[29](232B)+fp+lr+sp 后即 PC，offset 256）
+                arm_thread_state64_t state;
+                mach_msg_type_number_t sc = ARM_THREAD_STATE64_COUNT;
+                uint64_t pc = 0;
+                if (thread_get_state(threads[i], ARM_THREAD_STATE64, (thread_state_t)&state, &sc) == KERN_SUCCESS) {
+                    pc = *(uint64_t *)((uint8_t *)&state + 256);
+                }
+                if (pc) {
+                    Dl_info info;
+                    if (dladdr((const void *)pc, &info) && info.dli_fname) {
+                        NSString *name = [NSString stringWithUTF8String:info.dli_fname];
+                        if ([name containsString:@"TweakInject"] || [name containsString:@"DynamicLibraries"]) {
+                            NSString *file = [name lastPathComponent];
+                            counts[file] = @([counts[file] doubleValue] + MAX(cpu, 0.01));
+                        }
                     }
                 }
             }
+            usleep(30000);
         }
-        usleep(30000);
+    } @catch (NSException *e) {
     }
     for (mach_msg_type_number_t i = 0; i < threadCount; i++) {
         mach_port_deallocate(mach_task_self(), threads[i]);
@@ -213,10 +226,10 @@ static NSDictionary *NTM_sampleTweakCpu(void) {
 
 static dispatch_queue_t g_cpuQueue = nil;
 
-// 每 10 秒后台采样一次 Tweak CPU，写入 plist 供设置面板读取（首次 3 秒后开始）
+// 每 20 秒后台采样一次 Tweak CPU，写入 plist 供设置面板读取（首次 15 秒后开始，避开 SpringBoard 启动繁忙期）
 static void NTM_scheduleCpuSample(void) {
     if (!g_cpuQueue) g_cpuQueue = dispatch_queue_create("com.ntm.battery.cpu", DISPATCH_QUEUE_SERIAL);
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), g_cpuQueue, ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_SEC)), g_cpuQueue, ^{
         NSMutableDictionary *data = NTM_load();
         data[@"tweakCpu"] = NTM_sampleTweakCpu();
         data[@"tweakCpuAt"] = @([[NSDate date] timeIntervalSince1970]);
@@ -232,24 +245,24 @@ static void NTM_executeCommand(NSDictionary *cmd) {
     BOOL ok = NO;
     @try {
         if ([action isEqualToString:@"airplane"]) {
-            // 优先 SpringBoardServices 的 SBSSetAirplaneModeEnabled（任何进程可用）
-            void *h = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_LAZY);
-            if (h) {
-                void (*fn)(BOOL) = (void (*)(BOOL))dlsym(h, "SBSSetAirplaneModeEnabled");
-                if (fn) {
-                    fn(on);
+            // 本 Tweak 运行在 SpringBoard 内，优先用 SBAirplaneModeController（原生、BOOL 参数安全）
+            Class cls = NSClassFromString(@"SBAirplaneModeController");
+            id ctrl = cls ? [cls performSelector:NSSelectorFromString(@"sharedInstance")] : nil;
+            if (ctrl) {
+                SEL sel = NSSelectorFromString(@"setAirplaneMode:");
+                if ([ctrl respondsToSelector:sel]) {
+                    void (*fn)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL))[ctrl methodForSelector:sel];
+                    fn(ctrl, sel, on);
                     ok = YES;
                 }
             }
-            // 兜底 SBAirplaneModeController
+            // 兜底 SpringBoardServices 的 SBSSetAirplaneModeEnabled（注意参数是 CFBooleanRef，传 BOOL 会崩溃）
             if (!ok) {
-                Class cls = NSClassFromString(@"SBAirplaneModeController");
-                id ctrl = cls ? [cls performSelector:NSSelectorFromString(@"sharedInstance")] : nil;
-                if (ctrl) {
-                    SEL sel = NSSelectorFromString(@"setAirplaneMode:");
-                    if ([ctrl respondsToSelector:sel]) {
-                        void (*fn)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL))[ctrl methodForSelector:sel];
-                        fn(ctrl, sel, on);
+                void *h = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_LAZY);
+                if (h) {
+                    void (*fn)(CFBooleanRef) = (void (*)(CFBooleanRef))dlsym(h, "SBSSetAirplaneModeEnabled");
+                    if (fn) {
+                        fn(on ? kCFBooleanTrue : kCFBooleanFalse);
                         ok = YES;
                     }
                 }
@@ -279,7 +292,7 @@ static void NTM_registerCommandListener(void) {
     notify_register_dispatch("com.ntm.battery.command", &g_cmdToken, dispatch_get_main_queue(), ^(int token) {
         NSMutableDictionary *data = NTM_load();
         NSDictionary *cmd = data[@"pendingCommand"];
-        if ([cmd isKindOfClass:[NSDictionary class]]) {
+        if ([cmd isKindOfClass:[NSDictionary class]] && NTM_commandIsFresh(cmd)) {
             NTM_executeCommand(cmd);
         }
     });
@@ -297,7 +310,7 @@ static void NTM_init(void) {
         NSMutableDictionary *data = NTM_load();
         data[@"tweaks"] = NTM_loadedTweaks();
         NTM_save(data);
-        // 后台采样 Tweak CPU（每 15 秒）
+        // 后台采样 Tweak CPU（首次 15 秒后，每 20 秒一次）
         NTM_scheduleCpuSample();
         // 监听续航方案命令
         NTM_registerCommandListener();

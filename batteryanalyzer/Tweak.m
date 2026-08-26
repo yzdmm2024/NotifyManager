@@ -5,6 +5,9 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <mach-o/dyld.h>
+#import <mach/mach.h>
+#import <dlfcn.h>
+#import <unistd.h>
 
 static NSString *NTM_plistPath(void) {
     return @"/var/mobile/Library/Preferences/com.ntm.batteryanalyzer.plist";
@@ -155,6 +158,63 @@ static NSArray *NTM_loadedTweaks(void) {
     return names;
 }
 
+// 采样当前进程所有线程的 PC，统计各 Tweak dylib 的 CPU 占用（绝对占比 = 该 dylib 采样数 / 总采样数）
+static NSDictionary *NTM_sampleTweakCpu(void) {
+    NSMutableDictionary *counts = [NSMutableDictionary dictionary];
+    NSInteger total = 0;
+    thread_act_array_t threads = NULL;
+    mach_msg_type_number_t threadCount = 0;
+    if (task_threads(mach_task_self(), &threads, &threadCount) != KERN_SUCCESS) return nil;
+    for (int round = 0; round < 20; round++) {
+        for (mach_msg_type_number_t i = 0; i < threadCount; i++) {
+            arm_thread_state64_t state;
+            mach_msg_type_number_t sc = ARM_THREAD_STATE64_COUNT;
+            if (thread_get_state(threads[i], ARM_THREAD_STATE64, (thread_state_t)&state, &sc) != KERN_SUCCESS) continue;
+            uint64_t pc;
+#if defined(__DARWIN_OPAQUE_ARM_THREAD_STATE64)
+            pc = state.__opaque_pc;
+#else
+            pc = state.__pc;
+#endif
+            if (!pc) continue;
+            total++;
+            Dl_info info;
+            if (dladdr((const void *)pc, &info) && info.dli_fname) {
+                NSString *name = [NSString stringWithUTF8String:info.dli_fname];
+                if ([name containsString:@"TweakInject"] || [name containsString:@"DynamicLibraries"]) {
+                    NSString *file = [name lastPathComponent];
+                    counts[file] = @([counts[file] integerValue] + 1);
+                }
+            }
+        }
+        usleep(50000);
+    }
+    for (mach_msg_type_number_t i = 0; i < threadCount; i++) {
+        mach_port_deallocate(mach_task_self(), threads[i]);
+    }
+    vm_deallocate(mach_task_self(), (vm_address_t)threads, threadCount * sizeof(thread_act_t));
+    if (total == 0) return @{};
+    NSMutableDictionary *pct = [NSMutableDictionary dictionary];
+    for (NSString *k in counts) {
+        pct[k] = @((double)[counts[k] integerValue] / total * 100.0);
+    }
+    return pct;
+}
+
+static dispatch_queue_t g_cpuQueue = nil;
+
+// 每 15 秒后台采样一次 Tweak CPU，写入 plist 供设置面板读取
+static void NTM_scheduleCpuSample(void) {
+    if (!g_cpuQueue) g_cpuQueue = dispatch_queue_create("com.ntm.battery.cpu", DISPATCH_QUEUE_SERIAL);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_SEC)), g_cpuQueue, ^{
+        NSMutableDictionary *data = NTM_load();
+        data[@"tweakCpu"] = NTM_sampleTweakCpu();
+        data[@"tweakCpuAt"] = @([[NSDate date] timeIntervalSince1970]);
+        NTM_save(data);
+        NTM_scheduleCpuSample();
+    });
+}
+
 __attribute__((constructor))
 static void NTM_init(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -167,5 +227,7 @@ static void NTM_init(void) {
         NSMutableDictionary *data = NTM_load();
         data[@"tweaks"] = NTM_loadedTweaks();
         NTM_save(data);
+        // 后台采样 Tweak CPU（每 15 秒）
+        NTM_scheduleCpuSample();
     });
 }

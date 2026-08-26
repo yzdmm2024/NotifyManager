@@ -28,6 +28,7 @@
 @property (nonatomic) NSInteger expandedRow;  // 展开的排行行，-1 表示无
 @property (nonatomic) NSInteger selectedTab;  // 0 App排行 1 Tweak耗电 2 省电诊断 3 硬件充电
 @property (nonatomic) CGFloat drainRate;      // 平均耗电速率 %/h
+@property (nonatomic) NSInteger designCapacity; // 电池设计容量 mAh（用于估算 App 耗电 mAh）
 @end
 
 // 电量环形进度视图（总览卡片左侧圆环）
@@ -275,10 +276,10 @@
         [_cardView addSubview:_warnLabel];
 
         [NSLayoutConstraint activateConstraints:@[
-            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:5],
-            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-5],
-            [_cardView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:14],
-            [_cardView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-14],
+            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:3],
+            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-3],
+            [_cardView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:10],
+            [_cardView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-10],
 
             [blur.topAnchor constraintEqualToAnchor:_cardView.topAnchor],
             [blur.bottomAnchor constraintEqualToAnchor:_cardView.bottomAnchor],
@@ -286,7 +287,7 @@
             [blur.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor],
 
             [_ringView.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:18],
-            [_ringView.topAnchor constraintEqualToAnchor:_cardView.topAnchor constant:14],
+            [_ringView.topAnchor constraintEqualToAnchor:_cardView.topAnchor constant:10],
             [_ringView.widthAnchor constraintEqualToConstant:92],
             [_ringView.heightAnchor constraintEqualToConstant:92],
 
@@ -295,7 +296,7 @@
             [_levelLabel.widthAnchor constraintEqualToConstant:72],
 
             [_statusLabel.leadingAnchor constraintEqualToAnchor:_ringView.trailingAnchor constant:14],
-            [_statusLabel.topAnchor constraintEqualToAnchor:_ringView.topAnchor constant:14],
+            [_statusLabel.topAnchor constraintEqualToAnchor:_ringView.topAnchor constant:10],
             [_statusLabel.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor constant:-18],
 
             [_descLabel.leadingAnchor constraintEqualToAnchor:_statusLabel.leadingAnchor],
@@ -304,12 +305,12 @@
 
             [miniStack.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:16],
             [miniStack.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor constant:-16],
-            [miniStack.topAnchor constraintEqualToAnchor:_ringView.bottomAnchor constant:14],
+            [miniStack.topAnchor constraintEqualToAnchor:_ringView.bottomAnchor constant:10],
 
             [_warnLabel.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:18],
             [_warnLabel.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor constant:-18],
-            [_warnLabel.topAnchor constraintEqualToAnchor:miniStack.bottomAnchor constant:10],
-            [_warnLabel.bottomAnchor constraintEqualToAnchor:_cardView.bottomAnchor constant:-14],
+            [_warnLabel.topAnchor constraintEqualToAnchor:miniStack.bottomAnchor constant:8],
+            [_warnLabel.bottomAnchor constraintEqualToAnchor:_cardView.bottomAnchor constant:-10],
         ]];
     }
     return self;
@@ -362,10 +363,10 @@
         [_cardView addSubview:_titleLabel];
 
         [NSLayoutConstraint activateConstraints:@[
-            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:5],
-            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-5],
-            [_cardView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:14],
-            [_cardView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-14],
+            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:3],
+            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-3],
+            [_cardView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:10],
+            [_cardView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-10],
             [_cardView.heightAnchor constraintEqualToConstant:46],
 
             [_titleLabel.centerXAnchor constraintEqualToAnchor:_cardView.centerXAnchor],
@@ -426,10 +427,10 @@
         [_boxView addSubview:_descLabel];
 
         [NSLayoutConstraint activateConstraints:@[
-            [_boxView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:5],
-            [_boxView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-5],
-            [_boxView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:14],
-            [_boxView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-14],
+            [_boxView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:3],
+            [_boxView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-3],
+            [_boxView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:10],
+            [_boxView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-10],
 
             [_titleLabel.leadingAnchor constraintEqualToAnchor:_boxView.leadingAnchor constant:14],
             [_titleLabel.topAnchor constraintEqualToAnchor:_boxView.topAnchor constant:12],
@@ -548,10 +549,10 @@
         [_cardView addSubview:_tabBar];
 
         [NSLayoutConstraint activateConstraints:@[
-            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:5],
-            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-5],
-            [_cardView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:14],
-            [_cardView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-14],
+            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:3],
+            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-3],
+            [_cardView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:10],
+            [_cardView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-10],
             [_cardView.heightAnchor constraintEqualToConstant:44],
 
             [blur.topAnchor constraintEqualToAnchor:_cardView.topAnchor],
@@ -666,8 +667,8 @@
         [_cardView addSubview:textStack];
 
         [NSLayoutConstraint activateConstraints:@[
-            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:3],
-            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-3],
+            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:2],
+            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-2],
             [_cardView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:0],
             [_cardView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:0],
 
@@ -687,19 +688,19 @@
             [_rankLabel.heightAnchor constraintEqualToConstant:16],
 
             [textStack.leadingAnchor constraintEqualToAnchor:_iconView.trailingAnchor constant:12],
-            [textStack.topAnchor constraintEqualToAnchor:_cardView.topAnchor constant:10],
+            [textStack.topAnchor constraintEqualToAnchor:_cardView.topAnchor constant:8],
             [textStack.bottomAnchor constraintEqualToAnchor:_progressTrack.topAnchor constant:-8],
             [textStack.trailingAnchor constraintLessThanOrEqualToAnchor:_valueLabel.leadingAnchor constant:-8],
 
             [_valueLabel.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor constant:-18],
             [_valueLabel.centerYAnchor constraintEqualToAnchor:_iconView.centerYAnchor],
             [_valueLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:_cardView.leadingAnchor constant:18],
-            [_valueLabel.topAnchor constraintGreaterThanOrEqualToAnchor:_cardView.topAnchor constant:10],
-            [_valueLabel.bottomAnchor constraintLessThanOrEqualToAnchor:_cardView.bottomAnchor constant:-10],
+            [_valueLabel.topAnchor constraintGreaterThanOrEqualToAnchor:_cardView.topAnchor constant:8],
+            [_valueLabel.bottomAnchor constraintLessThanOrEqualToAnchor:_cardView.bottomAnchor constant:-8],
 
             [_progressTrack.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:16],
             [_progressTrack.trailingAnchor constraintEqualToAnchor:_progressLabel.leadingAnchor constant:-6],
-            [_progressTrack.bottomAnchor constraintEqualToAnchor:_cardView.bottomAnchor constant:-12],
+            [_progressTrack.bottomAnchor constraintEqualToAnchor:_cardView.bottomAnchor constant:-10],
             [_progressTrack.heightAnchor constraintEqualToConstant:4],
 
             [_progressLabel.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor constant:-16],
@@ -812,8 +813,8 @@
         [prev.bottomAnchor constraintEqualToAnchor:_cardView.bottomAnchor constant:-14].active = YES;
 
         [NSLayoutConstraint activateConstraints:@[
-            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:5],
-            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-5],
+            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:3],
+            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-3],
             [_cardView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:0],
             [_cardView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:0],
 
@@ -881,8 +882,8 @@
         [_cardView addSubview:_valueLabel];
 
         [NSLayoutConstraint activateConstraints:@[
-            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:4],
-            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-4],
+            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:3],
+            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-3],
             [_cardView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:0],
             [_cardView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:0],
 
@@ -933,7 +934,7 @@
         [self.contentView addSubview:bar];
 
         [NSLayoutConstraint activateConstraints:@[
-            [bar.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:14],
+            [bar.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:10],
             [bar.centerYAnchor constraintEqualToAnchor:_titleLabel.centerYAnchor],
             [bar.widthAnchor constraintEqualToConstant:4],
             [bar.heightAnchor constraintEqualToConstant:14],
@@ -996,8 +997,8 @@
         [_cardView addSubview:_actionLabel];
 
         [NSLayoutConstraint activateConstraints:@[
-            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:4],
-            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-4],
+            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:3],
+            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-3],
             [_cardView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:0],
             [_cardView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:0],
 
@@ -1200,8 +1201,8 @@ static NSDateFormatter *NTM_formatter(NSString *fmt);
         [_cardView addSubview:_chartView];
 
         [NSLayoutConstraint activateConstraints:@[
-            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:5],
-            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-5],
+            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:3],
+            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-3],
             [_cardView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:0],
             [_cardView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:0],
 
@@ -1526,20 +1527,37 @@ static NSDateFormatter *NTM_formatter(NSString *fmt) {
     return df;
 }
 
-// 读取电池硬件信息（IOKit AppleSmartBattery）
+// 读取电池硬件信息（IOKit 私有接口）。不同 iOS 版本服务名/键名不同，逐个尝试
 static NSDictionary *NTM_batteryHw(void) {
     NSMutableDictionary *info = [NSMutableDictionary dictionary];
-    io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"));
-    if (service) {
+    NSArray *services = @[@"AppleSmartBattery", @"AppleSmartBatteryManager", @"IOPMPowerSource"];
+    for (NSString *svc in services) {
+        io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching([svc UTF8String]));
+        if (!service) continue;
         CFMutableDictionaryRef props = NULL;
         kern_return_t kr = IORegistryEntryCreateCFProperties(service, &props, kCFAllocatorDefault, 0);
         if (kr == KERN_SUCCESS && props) {
             NSDictionary *d = (__bridge_transfer NSDictionary *)props;
-            for (NSString *k in @[@"Amperage", @"Temperature", @"CycleCount", @"AppleRawMaxCapacity", @"DesignCapacity", @"AppleRawCurrentCapacity", @"Voltage", @"ExternalConnected", @"IsCharging"]) {
-                if (d[k]) info[k] = d[k];
+            for (NSString *k in @[@"Amperage", @"Current", @"BatteryCurrent", @"Temperature", @"CycleCount",
+                                  @"AppleRawMaxCapacity", @"DesignCapacity", @"AppleRawCurrentCapacity",
+                                  @"Voltage", @"ExternalConnected", @"IsCharging"]) {
+                if (d[k] && !info[k]) info[k] = d[k];
+            }
+            // 充电器适配器信息（含瓦数 Watts，用于充电功率显示）
+            NSDictionary *adapter = d[@"AdapterDetails"];
+            if ([adapter isKindOfClass:[NSDictionary class]] && adapter.count && !info[@"AdapterDetails"]) {
+                info[@"AdapterDetails"] = adapter;
+            }
+            // 部分 iOS 版本电流/电压藏在 BatteryData 字典里
+            NSDictionary *batteryData = d[@"BatteryData"];
+            if ([batteryData isKindOfClass:[NSDictionary class]]) {
+                for (NSString *k in @[@"Current", @"Voltage", @"Amperage"]) {
+                    if (batteryData[k] && !info[k]) info[k] = batteryData[k];
+                }
             }
         }
         IOObjectRelease(service);
+        if (info.count) break;
     }
     return info;
 }
@@ -1559,6 +1577,16 @@ static NSString *NTM_tweakSize(NSString *dylibName) {
     return @"--";
 }
 
+// 切换飞行模式：用 SpringBoardServices 私有 C 函数 SBSSetAirplaneModeEnabled（任何进程可用，最可靠）
+static BOOL NTM_setAirplaneMode(BOOL on) {
+    void *h = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_LAZY);
+    if (!h) return NO;
+    void (*fn)(BOOL) = (void (*)(BOOL))dlsym(h, "SBSSetAirplaneModeEnabled");
+    if (!fn) return NO;
+    fn(on);
+    return YES;
+}
+
 // 通过 Tweak（注入 SpringBoard）执行续航方案命令并等待结果。
 // 面板运行在"设置"进程，SBAirplaneModeController 等 SpringBoard 私有类不可用，
 // 必须把命令写入 plist 并发 Darwin 通知，由 SpringBoard 内的 Tweak 执行后写回结果。
@@ -1569,13 +1597,13 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
     data[@"pendingCommand"] = cmd;
     [data writeToFile:plist atomically:YES];
     notify_post("com.ntm.battery.command");
-    for (int i = 0; i < 20; i++) {
+    for (int i = 0; i < 40; i++) {
         usleep(100000);
         NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:plist];
         NSDictionary *res = d[@"lastCommandResult"];
         if ([res isKindOfClass:[NSDictionary class]] &&
             [res[@"action"] isEqualToString:cmd[@"action"]] &&
-            [[NSDate date] timeIntervalSince1970] - [res[@"at"] doubleValue] < 3) {
+            [[NSDate date] timeIntervalSince1970] - [res[@"at"] doubleValue] < 5) {
             return [res[@"ok"] boolValue];
         }
     }
@@ -1617,7 +1645,7 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
     _tableView.dataSource = self;
     _tableView.backgroundView = bg;
     _tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
-    _tableView.contentInset = UIEdgeInsetsMake(4, 0, 20, 0);
+    _tableView.contentInset = UIEdgeInsetsMake(2, 0, 20, 0);
     _tableView.rowHeight = UITableViewAutomaticDimension;
     _tableView.estimatedRowHeight = 64;
     [self.view addSubview:_tableView];
@@ -1627,13 +1655,12 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
 
     [self reloadData];
 
-    // Tweak CPU 数据每 15 秒自动刷新（仅 Tweak Tab 可见时）
-    [NSTimer scheduledTimerWithTimeInterval:15.0 repeats:YES block:^(NSTimer *t) {
-        if (self->_selectedTab == 1 && self->_tableView) {
-            NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.ntm.batteryanalyzer.plist"];
-            if (d) self->_data = [d mutableCopy];
-            [self->_tableView reloadSections:[NSIndexSet indexSetWithIndex:4] withRowAnimation:UITableViewRowAnimationNone];
-        }
+    // 每 5 秒自动刷新（Tweak CPU、App 耗电、充电状态等实时数据）
+    [NSTimer scheduledTimerWithTimeInterval:5.0 repeats:YES block:^(NSTimer *t) {
+        if (!self->_tableView) return;
+        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.ntm.batteryanalyzer.plist"];
+        if (d) self->_data = [d mutableCopy];
+        [self reloadData];
     }];
 }
 
@@ -1783,12 +1810,42 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
 
     // 硬件&充电 行数据
     NSDictionary *hw = NTM_batteryHw();
+    _designCapacity = [hw[@"DesignCapacity"] integerValue];
     NSMutableArray *hwRows = [NSMutableArray array];
+    // 充电状态：优先用系统电池状态，其次 IOKit 的 ExternalConnected/IsCharging
+    UIDevice *dev = [UIDevice currentDevice];
+    dev.batteryMonitoringEnabled = YES;
+    BOOL charging = (dev.batteryState == UIDeviceBatteryStateCharging || dev.batteryState == UIDeviceBatteryStateFull);
+    if (!charging) {
+        NSNumber *ext = hw[@"ExternalConnected"];
+        NSNumber *isch = hw[@"IsCharging"];
+        charging = ([ext boolValue] && [isch boolValue]);
+    }
     NSNumber *amp = hw[@"Amperage"];
+    if (!amp) amp = hw[@"Current"];
+    if (!amp) amp = hw[@"BatteryCurrent"];
+    NSNumber *volt = hw[@"Voltage"];
+    NSDictionary *adapter = hw[@"AdapterDetails"];
+    NSNumber *adapterWatts = [adapter isKindOfClass:[NSDictionary class]] ? adapter[@"Watts"] : nil;
     if (amp) {
-        [hwRows addObject:@{@"type": @"info", @"key": @"实时放电电流", @"value": [NSString stringWithFormat:@"%ldmA", (long)[amp integerValue]]}];
+        NSInteger ma = labs([amp integerValue]);
+        if (charging) {
+            [hwRows addObject:@{@"type": @"info", @"key": @"充电电流", @"value": [NSString stringWithFormat:@"%ldmA", (long)ma], @"color": @"green"}];
+            // 充电功率：优先用充电器瓦数，其次 电流×电压 估算
+            double power = 0;
+            if (adapterWatts && [adapterWatts doubleValue] > 0) {
+                power = [adapterWatts doubleValue];
+            } else if (volt && [volt integerValue] > 0) {
+                power = ma * [volt doubleValue] / 1000.0 / 1000.0; // mA×mV → W
+            }
+            if (power > 0) {
+                [hwRows addObject:@{@"type": @"info", @"key": @"充电功率", @"value": [NSString stringWithFormat:@"%.1fW", power], @"color": @"green"}];
+            }
+        } else {
+            [hwRows addObject:@{@"type": @"info", @"key": @"实时放电电流", @"value": [NSString stringWithFormat:@"%ldmA", (long)ma]}];
+        }
     } else {
-        [hwRows addObject:@{@"type": @"info", @"key": @"实时放电电流", @"value": @"--"}];
+        [hwRows addObject:@{@"type": @"info", @"key": charging ? @"充电电流" : @"实时放电电流", @"value": @"--"}];
     }
     NSNumber *temp = hw[@"Temperature"];
     if (temp) {
@@ -1868,12 +1925,12 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
-    if (section == 0 || section == 1 || section == 2 || section == 5) return 28;
+    if (section == 0 || section == 1 || section == 2 || section == 5) return 16;
     return 0;
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
-    return 4;
+    return 1;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -2036,19 +2093,19 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
             });
         });
         cell.subtitleLabel.hidden = NO;
-        if (bg > 0) {
-            cell.subtitleLabel.text = [NSString stringWithFormat:@"前台 %ld分 · 后台 %ld分", (long)fg, (long)bg];
+        NSString *runtime = (bg > 0) ? [NSString stringWithFormat:@"前台 %ld分 · 后台 %ld分", (long)fg, (long)bg]
+                                     : [NSString stringWithFormat:@"前台 %ld分", (long)fg];
+        // 估算耗电 mAh：耗电百分比 × 设计容量 / 100
+        NSInteger mah = (drain > 0 && _designCapacity > 0) ? (NSInteger)lround(drain * _designCapacity / 100.0) : 0;
+        if (mah > 0) {
+            cell.subtitleLabel.text = [NSString stringWithFormat:@"%@ · ≈%ldmAh", runtime, (long)mah];
         } else {
-            cell.subtitleLabel.text = [NSString stringWithFormat:@"前台 %ld分", (long)fg];
+            cell.subtitleLabel.text = runtime;
         }
-        NSInteger total = fg + bg;
-        if (drain > 0) {
-            cell.valueLabel.text = [NSString stringWithFormat:@"耗电 %ld%%", (long)drain];
-            cell.valueLabel.textColor = [UIColor systemRedColor];
-            cell.valueLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightBold];
-        } else {
-            cell.valueLabel.text = [NSString stringWithFormat:@"共 %ld分", (long)total];
-        }
+        // 始终显示耗电百分比（0 也显示，避免"只显示运行时长"的观感）
+        cell.valueLabel.text = [NSString stringWithFormat:@"耗电 %ld%%", (long)drain];
+        cell.valueLabel.textColor = (drain > 0) ? [UIColor systemRedColor] : [UIColor colorWithWhite:0.45 alpha:1];
+        cell.valueLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightBold];
         // 耗电占比进度条（占排行总耗电比例）+ 百分比标签
         cell.progressRatio = (_totalDrain > 0) ? (CGFloat)drain / _totalDrain : 0;
         if (_totalDrain > 0 && drain > 0) {
@@ -2076,7 +2133,7 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
         cell.subtitleLabel.hidden = NO;
         NSDictionary *cpu = _data[@"tweakCpu"];
         NSString *size = NTM_tweakSize(name);
-        if ([cpu isKindOfClass:[NSDictionary class]] && cpu.count) {
+        if ([cpu isKindOfClass:[NSDictionary class]] && cpu.count && ![cpu[@"_idle"] boolValue]) {
             double pct = [cpu[name] doubleValue];
             cell.subtitleLabel.text = [NSString stringWithFormat:@"CPU 约 %.1f%% · 文件 %@", pct, size];
             cell.valueLabel.text = [NSString stringWithFormat:@"%.1f%%", pct];
@@ -2087,6 +2144,11 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
             } else {
                 cell.valueLabel.textColor = [UIColor systemGreenColor];
             }
+        } else if ([cpu isKindOfClass:[NSDictionary class]] && [cpu[@"_idle"] boolValue]) {
+            // 采样完成但所有 Tweak 均空闲（CPU ≈ 0%）
+            cell.subtitleLabel.text = [NSString stringWithFormat:@"文件 %@ · 当前空闲", size];
+            cell.valueLabel.text = @"0%";
+            cell.valueLabel.textColor = [UIColor systemGreenColor];
         } else {
             cell.subtitleLabel.text = [NSString stringWithFormat:@"文件 %@ · 采样中…", size];
             cell.valueLabel.text = @"--";
@@ -2299,9 +2361,10 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
             preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
         [alert addAction:[UIAlertAction actionWithTitle:@"应用" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-            [self showTip:@"正在应用…" msg:@"正在开启飞行模式与低电量模式，请稍候…"];
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                // 飞行模式/低电量都走 Tweak（SpringBoard 内执行，权限最足），直调仅作兜底
                 BOOL ok1 = NTM_sendCommand(@{@"action": @"airplane", @"on": @YES});
+                if (!ok1) ok1 = NTM_setAirplaneMode(YES);
                 BOOL ok2 = NTM_sendCommand(@{@"action": @"lowpower", @"on": @YES});
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [self showTip:@"已应用" msg:[NSString stringWithFormat:@"飞行模式：%@\n低电量模式：%@",
@@ -2336,6 +2399,7 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
             [self showTip:@"正在恢复…" msg:@"正在关闭飞行模式与低电量模式，请稍候…"];
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
                 BOOL ok1 = NTM_sendCommand(@{@"action": @"airplane", @"on": @NO});
+                if (!ok1) ok1 = NTM_setAirplaneMode(NO);
                 BOOL ok2 = NTM_sendCommand(@{@"action": @"lowpower", @"on": @NO});
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [UIScreen mainScreen].brightness = 0.8;

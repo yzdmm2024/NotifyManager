@@ -170,12 +170,7 @@ static NSDictionary *NTM_sampleTweakCpu(void) {
             arm_thread_state64_t state;
             mach_msg_type_number_t sc = ARM_THREAD_STATE64_COUNT;
             if (thread_get_state(threads[i], ARM_THREAD_STATE64, (thread_state_t)&state, &sc) != KERN_SUCCESS) continue;
-            uint64_t pc;
-#if defined(__DARWIN_OPAQUE_ARM_THREAD_STATE64)
-            pc = state.__opaque_pc;
-#else
-            pc = state.__pc;
-#endif
+            uint64_t pc = state.__pc;
             if (!pc) continue;
             total++;
             Dl_info info;

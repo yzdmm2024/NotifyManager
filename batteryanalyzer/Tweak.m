@@ -4,6 +4,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <mach-o/dyld.h>
 
 static NSString *NTM_plistPath(void) {
     return @"/var/mobile/Library/Preferences/com.ntm.batteryanalyzer.plist";
@@ -138,6 +139,22 @@ static void NTM_pruneApps(NSMutableDictionary *data) {
     data[@"apps"] = newApps;
 }
 
+// 枚举当前进程（SpringBoard）已注入的 Tweak dylib 列表
+static NSArray *NTM_loadedTweaks(void) {
+    NSMutableArray *names = [NSMutableArray array];
+    uint32_t count = _dyld_image_count();
+    for (uint32_t i = 0; i < count; i++) {
+        const char *name = _dyld_get_image_name(i);
+        if (!name) continue;
+        NSString *path = [NSString stringWithUTF8String:name];
+        if ([path containsString:@"TweakInject"] || [path containsString:@"DynamicLibraries"]) {
+            NSString *file = [path lastPathComponent];
+            if (file.length && ![names containsObject:file]) [names addObject:file];
+        }
+    }
+    return names;
+}
+
 __attribute__((constructor))
 static void NTM_init(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -146,5 +163,9 @@ static void NTM_init(void) {
         }];
         [[NSRunLoop mainRunLoop] addTimer:g_timer forMode:NSRunLoopCommonModes];
         NTM_tick();
+        // 记录已注入的 Tweak 列表（面板 Tab1 展示）
+        NSMutableDictionary *data = NTM_load();
+        data[@"tweaks"] = NTM_loadedTweaks();
+        NTM_save(data);
     });
 }

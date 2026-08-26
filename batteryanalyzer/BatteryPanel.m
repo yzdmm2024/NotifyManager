@@ -193,8 +193,14 @@
         _descLabel.lineBreakMode = NSLineBreakByTruncatingTail;
         [_cardView addSubview:_descLabel];
 
-        UIView *mini1 = [self makeMiniCardWithValue:&_rateValueLabel key:&_rateKeyLabel];
-        UIView *mini2 = [self makeMiniCardWithValue:&_sampleValueLabel key:&_sampleKeyLabel];
+        UILabel *rateValue = nil, *rateKey = nil;
+        UILabel *sampleValue = nil, *sampleKey = nil;
+        UIView *mini1 = [self makeMiniCardWithValue:&rateValue key:&rateKey];
+        UIView *mini2 = [self makeMiniCardWithValue:&sampleValue key:&sampleKey];
+        _rateValueLabel = rateValue;
+        _rateKeyLabel = rateKey;
+        _sampleValueLabel = sampleValue;
+        _sampleKeyLabel = sampleKey;
         UIStackView *miniStack = [[UIStackView alloc] initWithArrangedSubviews:@[mini1, mini2]];
         miniStack.axis = UILayoutConstraintAxisHorizontal;
         miniStack.distribution = UIStackViewDistributionFillEqually;

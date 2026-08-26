@@ -234,6 +234,33 @@ static void NTM_executeCommand(NSDictionary *cmd) {
 }
 
 static int g_cmdToken = 0;
+static int g_ctlToken = 0;
+
+// 面板打开时开始采样，关闭时完全静默（省电）
+static void NTM_startSampling(void) {
+    if (g_timer) return;
+    g_lastTick = 0;
+    g_timer = [NSTimer timerWithTimeInterval:5.0 repeats:YES block:^(NSTimer *t) {
+        NTM_tick();
+    }];
+    [[NSRunLoop mainRunLoop] addTimer:g_timer forMode:NSRunLoopCommonModes];
+}
+
+static void NTM_stopSampling(void) {
+    if (!g_timer) return;
+    [g_timer invalidate];
+    g_timer = nil;
+}
+
+// 监听面板开关（com.ntm.battery.control + plist 的 sampling 标记）
+static void NTM_registerControlListener(void) {
+    notify_register_dispatch("com.ntm.battery.control", &g_ctlToken, dispatch_get_main_queue(), ^(int token) {
+        NSDictionary *data = NTM_load();
+        BOOL on = [data[@"sampling"] boolValue];
+        if (on) NTM_startSampling();
+        else NTM_stopSampling();
+    });
+}
 
 // 监听设置面板的 Darwin 通知，读取 pendingCommand 并执行
 static void NTM_registerCommandListener(void) {
@@ -251,19 +278,15 @@ static void NTM_init(void) {
     @try {
         dispatch_async(dispatch_get_main_queue(), ^{
             @try {
-                g_timer = [NSTimer timerWithTimeInterval:5.0 repeats:YES block:^(NSTimer *t) {
-                    NTM_tick();
-                }];
-                [[NSRunLoop mainRunLoop] addTimer:g_timer forMode:NSRunLoopCommonModes];
-                // 不立即执行 NTM_tick：等第一个 5 秒后 timer 触发，避开 SpringBoard 启动繁忙期，
-                // 避免启动早期遍历 App 列表（objc_msgSend）触发段错误导致安全模式
                 // 记录已注入的 Tweak 列表（面板 Tab1 展示）
                 NSMutableDictionary *data = NTM_load();
                 data[@"tweaks"] = NTM_loadedTweaks();
+                // 默认静默：只有面板打开时才采样（省电）
+                BOOL on = [data[@"sampling"] boolValue];
                 NTM_save(data);
-                // 自动 CPU 采样已禁用（高风险段错误源，先保证稳定）
-                // NTM_scheduleCpuSample();
-                // 监听续航方案命令
+                if (on) NTM_startSampling();
+                // 监听面板开关 + 续航方案命令
+                NTM_registerControlListener();
                 NTM_registerCommandListener();
             } @catch (NSException *e) {
             }

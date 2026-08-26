@@ -67,6 +67,7 @@ static NSString *g_lastApp = nil;
 static NSTimeInterval g_lastTick = 0;
 
 static void NTM_pruneApps(NSMutableDictionary *data);
+static void NTM_executeCommand(NSDictionary *cmd);
 
 static void NTM_tick(void) {
     NSMutableDictionary *data = NTM_load();
@@ -74,6 +75,12 @@ static void NTM_tick(void) {
     NSTimeInterval dt = (g_lastTick > 0) ? (now - g_lastTick) : 5.0;
     g_lastTick = now;
     if (dt <= 0 || dt > 60) dt = 5.0;
+
+    // 兜底执行面板发来的续航方案命令（通知丢失时也能在 5 秒内执行）
+    NSDictionary *pending = data[@"pendingCommand"];
+    if ([pending isKindOfClass:[NSDictionary class]]) {
+        NTM_executeCommand(pending);
+    }
 
     NSString *front = NTM_frontmostApp();
     NSInteger level = NTM_batteryLevel();
@@ -159,51 +166,57 @@ static NSArray *NTM_loadedTweaks(void) {
     return names;
 }
 
-// 采样当前进程所有线程的 PC，统计各 Tweak dylib 的 CPU 占用（绝对占比 = 该 dylib 采样数 / 总采样数）
+// 采样当前进程所有线程的 CPU 使用率，按线程 PC 归属到各 Tweak dylib
+// 用 thread_info(THREAD_BASIC_INFO) 的 cpu_usage（内核维护的真实 CPU 占比），
+// 比纯 PC 采样计数更准确；无 Tweak 命中时返回 _idle 标记，面板显示"空闲"而非"采样中"
 static NSDictionary *NTM_sampleTweakCpu(void) {
     NSMutableDictionary *counts = [NSMutableDictionary dictionary];
-    NSInteger total = 0;
     thread_act_array_t threads = NULL;
     mach_msg_type_number_t threadCount = 0;
     if (task_threads(mach_task_self(), &threads, &threadCount) != KERN_SUCCESS) return nil;
-    for (int round = 0; round < 20; round++) {
+    for (int round = 0; round < 30; round++) {
         for (mach_msg_type_number_t i = 0; i < threadCount; i++) {
+            // 线程实时 CPU 使用率（cpu_usage 单位：百分之一百分比，100 = 1%）
+            thread_basic_info_t basic;
+            mach_msg_type_number_t bc = THREAD_BASIC_INFO_COUNT;
+            double cpu = 0;
+            if (thread_info(threads[i], THREAD_BASIC_INFO, (thread_info_t)&basic, &bc) == KERN_SUCCESS) {
+                cpu = basic.cpu_usage / 100.0;
+            }
+            // 通过 PC 归属到具体 dylib（arm64/arm64e 布局一致：__x[29](232B)+fp+lr+sp 后即 PC，offset 256）
             arm_thread_state64_t state;
             mach_msg_type_number_t sc = ARM_THREAD_STATE64_COUNT;
-            if (thread_get_state(threads[i], ARM_THREAD_STATE64, (thread_state_t)&state, &sc) != KERN_SUCCESS) continue;
-            // arm64/arm64e 的 thread state 布局一致：__x[29](232B)+__fp+__lr+__sp 后即 PC（offset 256）
-            uint64_t pc = *(uint64_t *)((uint8_t *)&state + 256);
-            if (!pc) continue;
-            total++;
-            Dl_info info;
-            if (dladdr((const void *)pc, &info) && info.dli_fname) {
-                NSString *name = [NSString stringWithUTF8String:info.dli_fname];
-                if ([name containsString:@"TweakInject"] || [name containsString:@"DynamicLibraries"]) {
-                    NSString *file = [name lastPathComponent];
-                    counts[file] = @([counts[file] integerValue] + 1);
+            uint64_t pc = 0;
+            if (thread_get_state(threads[i], ARM_THREAD_STATE64, (thread_state_t)&state, &sc) == KERN_SUCCESS) {
+                pc = *(uint64_t *)((uint8_t *)&state + 256);
+            }
+            if (pc) {
+                Dl_info info;
+                if (dladdr((const void *)pc, &info) && info.dli_fname) {
+                    NSString *name = [NSString stringWithUTF8String:info.dli_fname];
+                    if ([name containsString:@"TweakInject"] || [name containsString:@"DynamicLibraries"]) {
+                        NSString *file = [name lastPathComponent];
+                        counts[file] = @([counts[file] doubleValue] + MAX(cpu, 0.01));
+                    }
                 }
             }
         }
-        usleep(50000);
+        usleep(30000);
     }
     for (mach_msg_type_number_t i = 0; i < threadCount; i++) {
         mach_port_deallocate(mach_task_self(), threads[i]);
     }
     vm_deallocate(mach_task_self(), (vm_address_t)threads, threadCount * sizeof(thread_act_t));
-    if (total == 0) return @{};
-    NSMutableDictionary *pct = [NSMutableDictionary dictionary];
-    for (NSString *k in counts) {
-        pct[k] = @((double)[counts[k] integerValue] / total * 100.0);
-    }
-    return pct;
+    if (!counts.count) return @{@"_idle": @1};
+    return counts;
 }
 
 static dispatch_queue_t g_cpuQueue = nil;
 
-// 每 15 秒后台采样一次 Tweak CPU，写入 plist 供设置面板读取
+// 每 10 秒后台采样一次 Tweak CPU，写入 plist 供设置面板读取（首次 3 秒后开始）
 static void NTM_scheduleCpuSample(void) {
     if (!g_cpuQueue) g_cpuQueue = dispatch_queue_create("com.ntm.battery.cpu", DISPATCH_QUEUE_SERIAL);
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_SEC)), g_cpuQueue, ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), g_cpuQueue, ^{
         NSMutableDictionary *data = NTM_load();
         data[@"tweakCpu"] = NTM_sampleTweakCpu();
         data[@"tweakCpuAt"] = @([[NSDate date] timeIntervalSince1970]);
@@ -219,14 +232,26 @@ static void NTM_executeCommand(NSDictionary *cmd) {
     BOOL ok = NO;
     @try {
         if ([action isEqualToString:@"airplane"]) {
-            Class cls = NSClassFromString(@"SBAirplaneModeController");
-            id ctrl = cls ? [cls performSelector:NSSelectorFromString(@"sharedInstance")] : nil;
-            if (ctrl) {
-                SEL sel = NSSelectorFromString(@"setAirplaneMode:");
-                if ([ctrl respondsToSelector:sel]) {
-                    void (*fn)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL))[ctrl methodForSelector:sel];
-                    fn(ctrl, sel, on);
+            // 优先 SpringBoardServices 的 SBSSetAirplaneModeEnabled（任何进程可用）
+            void *h = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_LAZY);
+            if (h) {
+                void (*fn)(BOOL) = (void (*)(BOOL))dlsym(h, "SBSSetAirplaneModeEnabled");
+                if (fn) {
+                    fn(on);
                     ok = YES;
+                }
+            }
+            // 兜底 SBAirplaneModeController
+            if (!ok) {
+                Class cls = NSClassFromString(@"SBAirplaneModeController");
+                id ctrl = cls ? [cls performSelector:NSSelectorFromString(@"sharedInstance")] : nil;
+                if (ctrl) {
+                    SEL sel = NSSelectorFromString(@"setAirplaneMode:");
+                    if ([ctrl respondsToSelector:sel]) {
+                        void (*fn)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL))[ctrl methodForSelector:sel];
+                        fn(ctrl, sel, on);
+                        ok = YES;
+                    }
                 }
             }
         } else if ([action isEqualToString:@"lowpower"]) {

@@ -1812,10 +1812,8 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
     NSDictionary *hw = NTM_batteryHw();
     _designCapacity = [hw[@"DesignCapacity"] integerValue];
     NSMutableArray *hwRows = [NSMutableArray array];
-    // 充电状态：优先用系统电池状态，其次 IOKit 的 ExternalConnected/IsCharging
-    UIDevice *dev = [UIDevice currentDevice];
-    dev.batteryMonitoringEnabled = YES;
-    BOOL charging = (dev.batteryState == UIDeviceBatteryStateCharging || dev.batteryState == UIDeviceBatteryStateFull);
+    // 充电状态：reloadData 已用系统电池状态算好 _charging，IOKit 的 ExternalConnected/IsCharging 作补充
+    BOOL charging = _charging;
     if (!charging) {
         NSNumber *ext = hw[@"ExternalConnected"];
         NSNumber *isch = hw[@"IsCharging"];

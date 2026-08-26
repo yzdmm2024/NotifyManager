@@ -1,10 +1,11 @@
-// NotifyManager.m — 通知管理设置面板（自定义现代 UI）
+﻿// NotifyManager.m — 通知管理设置面板（自定义现代 UI）
 // 枚举已安装 App，按分类(用户/巨魔/系统)展示
 // 每个 App：总开关 + 锁定屏幕/通知中心/横幅/声音/标记 子开关 + 单应用重置
-// 每个 App 显示 4 个网络策略按钮：打开wifi/流量/wifi+流量/断网
-// 支持：分类切换、搜索、统计、批量开启/关闭/恢复自定义、导入/导出配置
+// 增强功能：仅隐藏角标 / 隐藏预览 / 后台自动断网 / 关键词过滤 / 分组
+// 网络策略按钮：打开wifi/流量/wifi+流量/断网
+// 顶部：模式快照 / 应用分组 / 拦截日志；批量开启/关闭/自定义；筛选；搜索
 // 列表使用 UITableView 虚拟化，切换分类/搜索即时响应
-// 配置保存到 NSUserDefaults suiteName，Tweak 读取并拦截通知
+// 配置保存到 NSUserDefaults suiteName，Tweak 读取并拦截通知/断网
 // 设置变更时同步到系统通知设置 (BBSettingsGateway) 与蜂窝网络 (PSAppDataUsagePolicyCache)
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -13,7 +14,6 @@
 #import <dlfcn.h>
 
 #pragma mark - 接口声明
-// PSAppDataUsagePolicyCache 是 Preferences 私有类，系统"设置→蜂窝网络"用它读写每应用策略
 @interface PSAppDataUsagePolicyCache : NSObject
 + (instancetype)sharedInstance;
 - (void)setUsagePoliciesForBundle:(NSString *)bundleId cellular:(BOOL)cellular wifi:(BOOL)wifi;
@@ -21,13 +21,14 @@
 
 static NSDictionary *NTM_cellularPolicies(void);
 static NSInteger NTM_netReadSystem(NSString *appId);
-// PSViewController 是 PreferenceLoader 控制器的正确基类（实现 PSController 协议），
-// 提供 setSpecifier:/setParentController:/setRootController: 等全部集成方法，
-// 避免 controllerForSpecifier: 调用未实现方法导致 unrecognized selector 崩溃。
 @interface PSViewController : UIViewController
 @end
 
 @interface NTMPrincipalController : PSViewController <UISearchBarDelegate, UIDocumentPickerDelegate, UITableViewDelegate, UITableViewDataSource>
+@end
+
+// 拦截日志显示页
+@interface NTMLogViewController : UITableViewController
 @end
 
 #pragma mark - 存储: NSUserDefaults suiteName (Tweak 读取同一份)
@@ -35,7 +36,6 @@ static NSString *NTM_suite = @"com.ntm.notifymanager";
 static NSString *NTM_key(NSString *appId, NSString *dim) {
     return [NSString stringWithFormat:@"NTM_%@_%@", dim, appId];
 }
-// 共享 NSUserDefaults 实例，避免每次读写都新建实例导致批量操作卡顿
 static NSUserDefaults *NTM_prefs(void) {
     static NSUserDefaults *prefs = nil;
     static dispatch_once_t once;
@@ -52,13 +52,16 @@ static BOOL NTM_readWith(NSUserDefaults *prefs, NSString *appId, NSString *dim) 
     id v = [prefs objectForKey:NTM_key(appId, dim)];
     return v ? [v boolValue] : YES;
 }
-// 通知 SpringBoard 的 Tweak 清空缓存，保证拦截逻辑读到最新配置
+// 增强开关：未设置默认关闭
+static BOOL NTM_feat(NSString *appId, NSString *key) {
+    id v = [NTM_prefs() objectForKey:NTM_key(appId, key)];
+    return v ? [v boolValue] : NO;
+}
 static void NTM_postConfigChanged(void) {
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                          CFSTR("com.ntm.notifymanager.configChanged"),
                                          NULL, NULL, YES);
 }
-
 static void NTM_write(NSString *appId, NSString *dim, BOOL val) {
     [NTM_prefs() setBool:val forKey:NTM_key(appId, dim)];
     [NTM_prefs() synchronize];
@@ -70,8 +73,6 @@ static void NTM_write(NSString *appId, NSString *dim, BOOL val) {
 static NSString *NTM_netKey(NSString *appId) {
     return [NSString stringWithFormat:@"NTM_net_%@", appId];
 }
-
-// 从系统蜂窝网络策略表读取该 App 当前策略（首次读取缓存一次 plist）
 static NSInteger NTM_netReadSystem(NSString *appId) {
     NSDictionary *ap = NTM_cellularPolicies();
     NSDictionary *policy = ap[appId];
@@ -80,23 +81,20 @@ static NSInteger NTM_netReadSystem(NSString *appId) {
     NSString *wifi = policy[@"kCTWiFiDataUsagePolicy"];
     BOOL cellOn = cell.length && [cell containsString:@"Allow"];
     BOOL wifiOn = wifi.length && [wifi containsString:@"Allow"];
-    if (cellOn && wifiOn) return 0;   // wifi+流量
-    if (!cellOn && !wifiOn) return 1; // 断网
-    if (wifiOn) return 2;             // 打开wifi
-    return 3;                         // 流量
+    if (cellOn && wifiOn) return 0;
+    if (!cellOn && !wifiOn) return 1;
+    if (wifiOn) return 2;
+    return 3;
 }
-
 static NSInteger NTM_netRead(NSString *appId) {
     id v = [NTM_prefs() objectForKey:NTM_netKey(appId)];
     if (v) return [v integerValue];
     return NTM_netReadSystem(appId);
 }
-
 static void NTM_netWrite(NSString *appId, NSInteger policy) {
     [NTM_prefs() setInteger:policy forKey:NTM_netKey(appId)];
     [NTM_prefs() synchronize];
 }
-
 static NSArray *NTM_netOptions(void) {
     return @[
         @{@"title":@"打开wifi", @"policy":@2},
@@ -107,19 +105,77 @@ static NSArray *NTM_netOptions(void) {
 }
 static UIColor *NTM_netColor(NSInteger policy) {
     switch (policy) {
-        case 1: return [UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:1]; // 断网 红
-        case 2: return [UIColor colorWithRed:0.30 green:0.55 blue:1.0 alpha:1];  // wifi 蓝
-        case 3: return [UIColor colorWithRed:0.42 green:0.75 blue:0.50 alpha:1]; // 流量 绿
-        default: return [UIColor colorWithRed:0.32 green:0.68 blue:0.88 alpha:1]; // wifi+流量 青
+        case 1: return [UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:1];
+        case 2: return [UIColor colorWithRed:0.30 green:0.55 blue:1.0 alpha:1];
+        case 3: return [UIColor colorWithRed:0.42 green:0.75 blue:0.50 alpha:1];
+        default: return [UIColor colorWithRed:0.32 green:0.68 blue:0.88 alpha:1];
     }
 }
 
+#pragma mark - 关键词存储 (NSString JSON 数组 / NSArray)
+static NSArray *NTM_kwList(NSString *appId) {
+    id v = [NTM_prefs() objectForKey:NTM_key(appId, @"kw")];
+    if ([v isKindOfClass:[NSArray class]]) return v;
+    if ([v isKindOfClass:[NSString class]] && [(NSString *)v length]) {
+        NSData *d = [(NSString *)v dataUsingEncoding:NSUTF8StringEncoding];
+        id parsed = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
+        if ([parsed isKindOfClass:[NSArray class]]) return parsed;
+    }
+    return @[];
+}
+static void NTM_kwSave(NSString *appId, NSArray *list) {
+    NSMutableArray *clean = [NSMutableArray array];
+    for (NSString *s in list) {
+        NSString *t = [(s ?: @"") stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (t.length) [clean addObject:t];
+    }
+    if (clean.count) {
+        NSData *d = [NSJSONSerialization dataWithJSONObject:clean options:0 error:nil];
+        [NTM_prefs() setObject:[[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] forKey:NTM_key(appId, @"kw")];
+    } else {
+        [NTM_prefs() removeObjectForKey:NTM_key(appId, @"kw")];
+    }
+    [NTM_prefs() synchronize];
+    NTM_postConfigChanged();
+}
+
+#pragma mark - 分组存储
+static NSArray *NTM_groupNames(void) {
+    NSArray *arr = [NTM_prefs() objectForKey:@"NTM_groupNames"];
+    return [arr isKindOfClass:[NSArray class]] ? arr : @[];
+}
+static void NTM_setGroup(NSString *appId, NSString *name) {
+    if (name.length) {
+        [NTM_prefs() setObject:name forKey:NTM_key(appId, @"group")];
+    } else {
+        [NTM_prefs() removeObjectForKey:NTM_key(appId, @"group")];
+    }
+    [NTM_prefs() synchronize];
+    NTM_postConfigChanged();
+}
+static void NTM_addGroupName(NSString *name) {
+    name = [name stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (!name.length) return;
+    NSMutableArray *arr = [NTM_groupNames() mutableCopy];
+    if (![arr containsObject:name]) [arr addObject:name];
+    [NTM_prefs() setObject:arr forKey:@"NTM_groupNames"];
+    [NTM_prefs() synchronize];
+}
+static void NTM_removeGroupName(NSString *name) {
+    NSMutableArray *arr = [NTM_groupNames() mutableCopy];
+    [arr removeObject:name];
+    [NTM_prefs() setObject:arr forKey:@"NTM_groupNames"];
+    // 该组下所有 App 回到未分组
+    for (NSString *k in [NTM_prefs() dictionaryRepresentation].allKeys) {
+        if ([k hasPrefix:@"NTM_group_"] && [[NTM_prefs() objectForKey:k] isEqualToString:name]) {
+            [NTM_prefs() removeObjectForKey:k];
+        }
+    }
+    [NTM_prefs() synchronize];
+    NTM_postConfigChanged();
+}
+
 #pragma mark - 同步到系统通知设置 (BBSettingsGateway)
-// 让"设置 → 通知"里的系统设置跟随本面板的开关，双向一致
-// 注意：BBSectionInfo 没有 soundEnabled/badgeEnabled 属性，声音/角标必须通过
-// pushSettings 位掩码控制（bit0/3=角标, bit1/4=声音, bit2/5=横幅提醒）。
-// 若用 KVC 设置不存在的 key 会抛异常，导致 setSectionInfo:forSectionID: 永不执行。
-// 常驻 gateway，避免每次创建/释放导致 setSectionInfo 持久化失败
 static id NTM_gateway(void) {
     static id gw = nil;
     static dispatch_once_t once;
@@ -129,15 +185,12 @@ static id NTM_gateway(void) {
     });
     return gw;
 }
-
-// 所有系统同步统一走后台串行队列，避免阻塞 UI 且防止交错
 static dispatch_queue_t NTM_syncQueue(void) {
     static dispatch_queue_t q;
     static dispatch_once_t once;
     dispatch_once(&once, ^{ q = dispatch_queue_create("com.ntm.sync", DISPATCH_QUEUE_SERIAL); });
     return q;
 }
-
 static void NTM_syncSystem(NSString *appId) {
     if (!appId.length) return;
     @try {
@@ -149,7 +202,6 @@ static void NTM_syncSystem(NSString *appId) {
         BOOL lock = NTM_read(appId, @"lock");
         BOOL nc = NTM_read(appId, @"nc");
         BOOL banner = NTM_read(appId, @"banner");
-        // 声音/标记仅在总开关开启且至少一个可见通道(锁屏/通知中心/横幅)开启时才生效
         BOOL anyVisible = lock || nc || banner;
         BOOL sound = en && anyVisible && NTM_read(appId, @"sound");
         BOOL badge = en && anyVisible && NTM_read(appId, @"badge");
@@ -158,9 +210,9 @@ static void NTM_syncSystem(NSString *appId) {
         [info setValue:@(nc) forKey:@"showsInNotificationCenter"];
         [info setValue:@(banner ? 1 : 0) forKey:@"alertType"];
         NSUInteger push = 0;
-        if (sound) push |= 18;  // bit1+bit4 声音
-        if (badge) push |= 9;   // bit0+bit3 角标
-        if (banner) push |= 36; // bit2+bit5 横幅提醒
+        if (sound) push |= 18;
+        if (badge) push |= 9;
+        if (banner) push |= 36;
         [info setValue:@(push) forKey:@"pushSettings"];
         SEL setSel = NSSelectorFromString(@"setSectionInfo:forSectionID:");
         if ([gateway respondsToSelector:setSel]) {
@@ -172,14 +224,12 @@ static void NTM_syncSystem(NSString *appId) {
         NSLog(@"[NTM] sync %@ exception %@", appId, e);
     }
 }
-
 static void NTM_syncSystemAsync(NSString *appId) {
     if (!appId.length) return;
     dispatch_async(NTM_syncQueue(), ^{ NTM_syncSystem(appId); });
 }
 
-#pragma mark - 同步到系统蜂窝网络设置 (CommCenter 私有 API)
-// 读取系统蜂窝网络策略表，用于初始同步面板显示
+#pragma mark - 同步到系统蜂窝网络设置
 static NSDictionary *NTM_cellularPolicies(void) {
     static NSDictionary *dict = nil;
     static dispatch_once_t once;
@@ -191,14 +241,10 @@ static NSDictionary *NTM_cellularPolicies(void) {
     });
     return dict;
 }
-
-// 通过 Preferences 私有类（与"设置→蜂窝网络"同源）设置每 App 网络策略，
-// 失败时回退 CoreTelephony 私有 API
-// policy: 0=wifi+流量 1=断网 2=打开wifi 3=流量
 static void NTM_syncCellular(NSString *appId, NSInteger policy) {
     if (!appId.length) return;
-    BOOL cellular = (policy == 0 || policy == 3); // wifi+流量/流量 允许蜂窝
-    BOOL wifi = (policy == 0 || policy == 2);     // wifi+流量/打开wifi 允许WiFi
+    BOOL cellular = (policy == 0 || policy == 3);
+    BOOL wifi = (policy == 0 || policy == 2);
     @try {
         Class cls = NSClassFromString(@"PSAppDataUsagePolicyCache");
         if (!cls) {
@@ -209,8 +255,7 @@ static void NTM_syncCellular(NSString *appId, NSInteger policy) {
             id cache = [(id)cls sharedInstance];
             if (cache) {
                 [cache setUsagePoliciesForBundle:appId cellular:cellular wifi:wifi];
-                NSLog(@"[NTM] cellular %@ policy=%ld cell=%d wifi=%d (PSAppDataUsagePolicyCache)",
-                      appId, (long)policy, cellular, wifi);
+                NSLog(@"[NTM] cellular %@ policy=%ld (PSAppDataUsagePolicyCache)", appId, (long)policy);
                 return;
             }
         }
@@ -227,20 +272,14 @@ static void NTM_syncCellular(NSString *appId, NSInteger policy) {
             if (conn) {
                 NSString *cell = cellular ? @"kCTCellularDataUsagePolicyAlwaysAllow" : @"kCTCellularDataUsagePolicyDeny";
                 NSString *wifiS = wifi ? @"kCTWiFiDataUsagePolicyAlwaysAllow" : @"kCTWiFiDataUsagePolicyDeny";
-                NSDictionary *policies = @{
-                    @"kCTCellularDataUsagePolicy": cell,
-                    @"kCTWiFiDataUsagePolicy": wifiS,
-                };
-                setPolicy(conn, appId, policies);
+                setPolicy(conn, appId, @{@"kCTCellularDataUsagePolicy":cell, @"kCTWiFiDataUsagePolicy":wifiS});
             }
         }
         dlclose(handle);
-        NSLog(@"[NTM] cellular %@ policy=%ld (CoreTelephony)", appId, (long)policy);
     } @catch(NSException *e) {
         NSLog(@"[NTM] cellular %@ exception %@", appId, e);
     }
 }
-
 static void NTM_syncCellularAsync(NSString *appId, NSInteger policy) {
     if (!appId.length) return;
     dispatch_async(NTM_syncQueue(), ^{ NTM_syncCellular(appId, policy); });
@@ -258,8 +297,6 @@ static NSArray *NTM_dims(void) {
 }
 
 #pragma mark - 系统通知 section
-// 缓存一次 BulletinBoard 的所有 section（含 查找/跟踪通知/家庭 等非 /Applications 的漏网之鱼）
-// 返回 [{id, name}]，用于补齐系统通知列表与判断某 App 是否注册了通知
 static NSArray *NTM_systemSections(void) {
     static NSArray *arr = nil;
     static dispatch_once_t once;
@@ -273,28 +310,19 @@ static NSArray *NTM_systemSections(void) {
                               NSSelectorFromString(@"allSectionInfo"),
                               NSSelectorFromString(@"sectionInfos")};
                 for (int i = 0; i < 3 && !sections; i++) {
-                    if ([gateway respondsToSelector:sels[i]]) {
-                        sections = [gateway performSelector:sels[i]];
-                    }
+                    if ([gateway respondsToSelector:sels[i]]) sections = [gateway performSelector:sels[i]];
                 }
                 NSArray *secList = nil;
-                if ([sections isKindOfClass:[NSArray class]]) {
-                    secList = sections;
-                } else if ([sections isKindOfClass:[NSDictionary class]]) {
-                    secList = [sections allValues];
-                }
+                if ([sections isKindOfClass:[NSArray class]]) secList = sections;
+                else if ([sections isKindOfClass:[NSDictionary class]]) secList = [sections allValues];
                 for (id info in secList) {
                     NSString *sid = nil;
                     @try { sid = [info performSelector:@selector(sectionID)]; } @catch(NSException *e) {}
-                    if (!sid.length) {
-                        @try { sid = [info performSelector:@selector(sectionIdentifier)]; } @catch(NSException *e) {}
-                    }
+                    if (!sid.length) { @try { sid = [info performSelector:@selector(sectionIdentifier)]; } @catch(NSException *e) {} }
                     if (!sid.length) continue;
                     NSString *name = nil;
                     @try { name = [info performSelector:@selector(sectionName)]; } @catch(NSException *e) {}
-                    if (!name.length) {
-                        @try { name = [info performSelector:@selector(displayName)]; } @catch(NSException *e) {}
-                    }
+                    if (!name.length) { @try { name = [info performSelector:@selector(displayName)]; } @catch(NSException *e) {} }
                     if (!name.length) name = sid;
                     [out addObject:@{@"id":sid, @"name":name}];
                 }
@@ -304,7 +332,6 @@ static NSArray *NTM_systemSections(void) {
     });
     return arr;
 }
-
 static NSSet *NTM_notifSet(void) {
     static NSMutableSet *set = nil;
     static dispatch_once_t once;
@@ -314,10 +341,9 @@ static NSSet *NTM_notifSet(void) {
     });
     return set;
 }
-
 static BOOL NTM_hasNotifications(NSString *appId) {
     NSSet *s = NTM_notifSet();
-    if (!s.count) return YES; // 查询失败时默认显示
+    if (!s.count) return YES;
     return [s containsObject:appId];
 }
 
@@ -332,7 +358,6 @@ static NSString *NTM_catOfProxy(id proxy) {
     BOOL appleSign = (teamID.length && ![teamID isEqualToString:@"adhoc"] && ![teamID isEqualToString:@"AdHoc"]);
     return appleSign ? @"用户应用" : @"巨魔应用";
 }
-
 static UIImage *NTM_iconFor(NSString *bid) {
     if (!bid.length) return nil;
     @try {
@@ -342,8 +367,6 @@ static UIImage *NTM_iconFor(NSString *bid) {
     } @catch(NSException *e) {}
     return nil;
 }
-
-// 枚举 App：不在此处加载图标（图标放到卡片里异步加载），避免进入面板卡顿
 static NSArray *NTM_allApps(void) {
     NSMutableArray *out = [NSMutableArray array];
     Class wk = objc_getClass("LSApplicationWorkspace");
@@ -355,7 +378,6 @@ static NSArray *NTM_allApps(void) {
     id ws = ((id(*)(id,SEL))objc_msgSend)((id)wk, sel_registerName("defaultWorkspace"));
     if (!ws) return out;
     NSArray *proxies = ((id(*)(id,SEL))objc_msgSend)(ws, sel_registerName("allApplications"));
-    // 已安装 App 集合：合并系统 section 时只补真实安装的 App，过滤 daemon/服务类 section
     NSMutableSet *installed = [NSMutableSet set];
     for (id proxy in proxies) {
         NSString *bid = ((id(*)(id,SEL))objc_msgSend)(proxy, sel_registerName("applicationIdentifier"));
@@ -369,14 +391,11 @@ static NSArray *NTM_allApps(void) {
         if (!bid.length || !path.length) continue;
         NSString *cat = NTM_catOfProxy(proxy);
         if ([cat isEqualToString:@"系统应用"]) {
-            // 只保留 /Applications 下的用户界面系统应用，且注册了通知
             if (![path hasPrefix:@"/Applications/"]) continue;
             if (!NTM_hasNotifications(bid)) continue;
         }
-        [out addObject:@{ @"id":bid, @"name":(name.length?name:bid), @"cat":cat,
-                          @"icon":[NSNull null] }];
+        [out addObject:@{ @"id":bid, @"name":(name.length?name:bid), @"cat":cat, @"icon":[NSNull null] }];
     }
-    // 合并系统通知 section：只补真实安装的 Apple 系统 App（过滤 daemon/服务类 section）
     NSMutableSet *seen = [NSMutableSet set];
     for (NSDictionary *app in out) [seen addObject:app[@"id"]];
     for (NSDictionary *sec in NTM_systemSections()) {
@@ -396,6 +415,36 @@ static NSArray *NTM_allApps(void) {
     }];
     return out;
 }
+// App id -> 显示名（拦截日志等场景）
+static NSDictionary *NTM_nameMap(void) {
+    static NSDictionary *map = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableDictionary *d = [NSMutableDictionary dictionary];
+        for (NSDictionary *app in NTM_allApps()) if (app[@"name"]) d[app[@"id"]] = app[@"name"];
+        map = [d copy];
+    });
+    return map;
+}
+// 显示名（可复用的解析，appId可能不在已装列表）
+static NSString *NTM_dispName(NSString *appId) {
+    NSString *n = NTM_nameMap()[appId];
+    return n.length ? n : appId;
+}
+
+#pragma mark - 状态 tag 构造
+static UILabel *NTM_tag(NSString *text, UIColor *color) {
+    UILabel *l = [[UILabel alloc] init];
+    l.text = text;
+    l.font = [UIFont systemFontOfSize:10 weight:UIFontWeightSemibold];
+    l.textColor = color;
+    l.backgroundColor = [color colorWithAlphaComponent:0.13];
+    l.layer.cornerRadius = 7;
+    l.clipsToBounds = YES;
+    l.textAlignment = NSTextAlignmentCenter;
+    l.translatesAutoresizingMaskIntoConstraints = NO;
+    return l;
+}
 
 #pragma mark - App 卡片视图
 @interface NTMAppCardView : UIView
@@ -403,10 +452,17 @@ static NSArray *NTM_allApps(void) {
 @property (nonatomic, strong) UISwitch *masterSwitch;
 @property (nonatomic, strong) NSMutableArray *dimSwitches;
 @property (nonatomic, strong) NSMutableArray *netButtons;
+@property (nonatomic, strong) UISwitch *noBadgeSwitch;
+@property (nonatomic, strong) UISwitch *noPreviewSwitch;
+@property (nonatomic, strong) UISwitch *bgNetSwitch;
+@property (nonatomic, strong) UIStackView *statusRow;
 @property (nonatomic, copy) void (^onDimChange)(NSString *appId, NSString *dim, BOOL val);
 @property (nonatomic, copy) void (^onMasterChange)(NSString *appId, BOOL val);
 @property (nonatomic, copy) void (^onNetChange)(NSString *appId, NSInteger policy);
 @property (nonatomic, copy) void (^onReset)(NSString *appId);
+@property (nonatomic, copy) void (^onFeatChange)(NSString *appId, NSString *key, BOOL val);
+@property (nonatomic, copy) void (^onKeywordEdit)(NSString *appId);
+@property (nonatomic, copy) void (^onGroupPick)(NSString *appId);
 - (instancetype)initWithApp:(NSDictionary *)app;
 - (void)reloadFromPrefs;
 @end
@@ -430,6 +486,21 @@ static NSArray *NTM_allApps(void) {
     return self;
 }
 
+// 构造一个 "标签+开关" 的竖向单元
+- (UIView *)swCell:(NSString *)title sw:(UISwitch *)sw {
+    UILabel *lbl = [[UILabel alloc] init];
+    lbl.text = title;
+    lbl.font = [UIFont systemFontOfSize:10];
+    lbl.textColor = [UIColor colorWithWhite:0.33 alpha:1];
+    lbl.textAlignment = NSTextAlignmentCenter;
+    sw.transform = CGAffineTransformMakeScale(0.72, 0.72);
+    UIStackView *item = [[UIStackView alloc] initWithArrangedSubviews:@[lbl, sw]];
+    item.axis = UILayoutConstraintAxisVertical;
+    item.alignment = UIStackViewAlignmentCenter;
+    item.spacing = 2;
+    return item;
+}
+
 - (void)buildUI:(NSDictionary *)app {
     NSArray *dims = NTM_dims();
 
@@ -441,15 +512,11 @@ static NSArray *NTM_allApps(void) {
     iconView.backgroundColor = [UIColor colorWithRed:0.45 green:0.62 blue:0.98 alpha:1];
     [iconView.widthAnchor constraintEqualToConstant:32].active = YES;
     [iconView.heightAnchor constraintEqualToConstant:32].active = YES;
-
-    // 图标异步加载，不阻塞主线程
     NSString *bid = _appId;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         UIImage *icon = NTM_iconFor(bid);
         if (!icon) return;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            iconView.image = icon;
-        });
+        dispatch_async(dispatch_get_main_queue(), ^{ iconView.image = icon; });
     });
 
     UILabel *nameLabel = [[UILabel alloc] init];
@@ -479,25 +546,19 @@ static NSArray *NTM_allApps(void) {
     header.alignment = UIStackViewAlignmentCenter;
     header.spacing = 10;
 
+    // 状态标签行
+    _statusRow = [[UIStackView alloc] init];
+    _statusRow.axis = UILayoutConstraintAxisHorizontal;
+    _statusRow.alignment = UIStackViewAlignmentCenter;
+    _statusRow.spacing = 6;
+
     // 子开关行：5 个维度横排
     NSMutableArray *dimItems = [NSMutableArray array];
     for (NSDictionary *d in dims) {
-        UILabel *lbl = [[UILabel alloc] init];
-        lbl.text = d[@"title"];
-        lbl.font = [UIFont systemFontOfSize:11];
-        lbl.textColor = [UIColor colorWithWhite:0.33 alpha:1];
-        lbl.textAlignment = NSTextAlignmentCenter;
-
         UISwitch *sw = [[UISwitch alloc] init];
-        sw.transform = CGAffineTransformMakeScale(0.72, 0.72);
         [sw addTarget:self action:@selector(dimChanged:) forControlEvents:UIControlEventValueChanged];
         [_dimSwitches addObject:sw];
-
-        UIStackView *item = [[UIStackView alloc] initWithArrangedSubviews:@[lbl, sw]];
-        item.axis = UILayoutConstraintAxisVertical;
-        item.alignment = UIStackViewAlignmentCenter;
-        item.spacing = 2;
-        [dimItems addObject:item];
+        [dimItems addObject:[self swCell:d[@"title"] sw:sw]];
     }
     UIStackView *dimRow = [[UIStackView alloc] initWithArrangedSubviews:dimItems];
     dimRow.axis = UILayoutConstraintAxisHorizontal;
@@ -505,22 +566,64 @@ static NSArray *NTM_allApps(void) {
     dimRow.alignment = UIStackViewAlignmentCenter;
     dimRow.spacing = 4;
 
-    NSMutableArray *rows = [NSMutableArray arrayWithArray:@[header, dimRow]];
+    // 增强功能行：仅隐藏角标 / 隐藏预览 / 后台自动断网
+    _noBadgeSwitch = [[UISwitch alloc] init];
+    [_noBadgeSwitch addTarget:self action:@selector(featChanged:) forControlEvents:UIControlEventValueChanged];
+    _noPreviewSwitch = [[UISwitch alloc] init];
+    [_noPreviewSwitch addTarget:self action:@selector(featChanged:) forControlEvents:UIControlEventValueChanged];
+    _bgNetSwitch = [[UISwitch alloc] init];
+    [_bgNetSwitch addTarget:self action:@selector(featChanged:) forControlEvents:UIControlEventValueChanged];
+    UIStackView *featRow = [[UIStackView alloc] initWithArrangedSubviews:@[
+        [self swCell:@"仅隐藏角标" sw:_noBadgeSwitch],
+        [self swCell:@"隐藏预览" sw:_noPreviewSwitch],
+        [self swCell:@"后台断网" sw:_bgNetSwitch],
+    ]];
+    featRow.axis = UILayoutConstraintAxisHorizontal;
+    featRow.distribution = UIStackViewDistributionFillEqually;
+    featRow.alignment = UIStackViewAlignmentCenter;
+    featRow.spacing = 4;
+
+    // 关键词 + 分组 行
+    UIButton *kwBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    [kwBtn setTitle:@"关键词过滤" forState:UIControlStateNormal];
+    kwBtn.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+    kwBtn.layer.cornerRadius = 8;
+    kwBtn.backgroundColor = [UIColor colorWithRed:0.55 green:0.58 blue:0.65 alpha:0.15];
+    [kwBtn setTitleColor:[UIColor colorWithWhite:0.35 alpha:1] forState:UIControlStateNormal];
+    [kwBtn addTarget:self action:@selector(keywordTapped) forControlEvents:UIControlEventTouchUpInside];
+
+    UIButton *grpBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    [grpBtn setTitle:@"分组" forState:UIControlStateNormal];
+    grpBtn.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+    grpBtn.layer.cornerRadius = 8;
+    grpBtn.backgroundColor = [UIColor colorWithRed:0.45 green:0.62 blue:0.98 alpha:0.15];
+    [grpBtn setTitleColor:[UIColor colorWithRed:0.20 green:0.40 blue:0.80 alpha:1] forState:UIControlStateNormal];
+    [grpBtn addTarget:self action:@selector(groupTapped) forControlEvents:UIControlEventTouchUpInside];
+
+    UIStackView *btnRow = [[UIStackView alloc] initWithArrangedSubviews:@[kwBtn, grpBtn]];
+    btnRow.axis = UILayoutConstraintAxisHorizontal;
+    btnRow.distribution = UIStackViewDistributionFillEqually;
+    btnRow.spacing = 8;
+    [kwBtn.heightAnchor constraintEqualToConstant:26].active = YES;
+    [grpBtn.heightAnchor constraintEqualToConstant:26].active = YES;
+
+    NSMutableArray *rows = [NSMutableArray arrayWithArray:@[header, _statusRow, dimRow, featRow, btnRow]];
     [rows addObject:[self buildNetRow]];
     UIStackView *v = [[UIStackView alloc] initWithArrangedSubviews:rows];
     v.axis = UILayoutConstraintAxisVertical;
-    v.spacing = 12;
+    v.spacing = 9;
     v.translatesAutoresizingMaskIntoConstraints = NO;
     [self addSubview:v];
     [NSLayoutConstraint activateConstraints:@[
-        [v.topAnchor constraintEqualToAnchor:self.topAnchor constant:14],
+        [v.topAnchor constraintEqualToAnchor:self.topAnchor constant:12],
         [v.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:14],
         [v.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-14],
-        [v.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-14],
+        [v.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-12],
     ]];
+
+    [self reloadStatus];
 }
 
-// 网络策略行：打开wifi / 流量 / wifi+流量 / 断网，单选
 - (UIView *)buildNetRow {
     UILabel *netLabel = [[UILabel alloc] init];
     netLabel.text = @"网络";
@@ -553,6 +656,40 @@ static NSArray *NTM_allApps(void) {
     return row;
 }
 
+- (void)reloadStatus {
+    for (UIView *v in _statusRow.arrangedSubviews) {
+        [_statusRow removeArrangedSubview:v];
+        [v removeFromSuperview];
+    }
+    NSMutableArray *tags = [NSMutableArray array];
+    BOOL en = NTM_read(_appId, @"en");
+    if (!en) {
+        [tags addObject:NTM_tag(@"通知关闭", [UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:1])];
+    } else {
+        BOOL allOn = YES;
+        for (NSDictionary *d in NTM_dims()) if (!NTM_read(_appId, d[@"key"])) { allOn = NO; break; }
+        [tags addObject:NTM_tag(allOn ? @"通知全开" : @"部分开启",
+                                 allOn ? [UIColor colorWithRed:0.30 green:0.55 blue:1.0 alpha:1]
+                                       : [UIColor colorWithRed:0.95 green:0.60 blue:0.15 alpha:1])];
+    }
+    NSInteger net = NTM_netRead(_appId);
+    BOOL netOff = (net == 1);
+    [tags addObject:NTM_tag(netOff ? @"断网" : @"正常联网",
+                            netOff ? [UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:1]
+                                   : [UIColor colorWithRed:0.42 green:0.75 blue:0.50 alpha:1])];
+    NSMutableArray *feats = [NSMutableArray array];
+    if (NTM_feat(_appId, @"noBadge")) [feats addObject:@"仅隐角标"];
+    if (NTM_feat(_appId, @"noPreview")) [feats addObject:@"隐预览"];
+    if (NTM_feat(_appId, @"bgNet")) [feats addObject:@"后台断网"];
+    [tags addObject:NTM_tag(feats.count ? [feats componentsJoinedByString:@"+"] : @"—",
+                            [UIColor colorWithRed:0.40 green:0.45 blue:0.55 alpha:1])];
+    NSString *grp = [NTM_prefs() objectForKey:NTM_key(_appId, @"group")];
+    [tags addObject:NTM_tag(grp.length ? grp : @"—",
+                            [UIColor colorWithRed:0.55 green:0.40 blue:0.90 alpha:1])];
+    for (UILabel *t in tags) [t.heightAnchor constraintEqualToConstant:16].active = YES;
+    for (UILabel *t in tags) [_statusRow addArrangedSubview:t];
+}
+
 - (void)netTapped:(UIButton *)sender {
     NSInteger policy = sender.tag;
     NTM_netWrite(_appId, policy);
@@ -578,7 +715,6 @@ static NSArray *NTM_allApps(void) {
 - (void)masterChanged:(UISwitch *)sender {
     NSUserDefaults *prefs = NTM_prefs();
     [prefs setBool:sender.on forKey:NTM_key(_appId, @"en")];
-    // 联动：总开关切换时同步所有子开关
     for (NSDictionary *d in NTM_dims()) [prefs setBool:sender.on forKey:NTM_key(_appId, d[@"key"])];
     [prefs synchronize];
     NTM_postConfigChanged();
@@ -592,17 +728,40 @@ static NSArray *NTM_allApps(void) {
     if (idx == NSNotFound || idx >= NTM_dims().count) return;
     NSDictionary *d = NTM_dims()[idx];
     NTM_write(_appId, d[@"key"], sender.on);
-    // 各子开关独立控制，互不联动；总开关仅由总开关本身控制
-    // 刷新后按依赖规则更新声音/标记的可用状态
     [self reloadFromPrefs];
     NTM_syncSystemAsync(_appId);
     if (_onDimChange) _onDimChange(_appId, d[@"key"], sender.on);
+}
+
+// 增强功能开关
+- (void)featChanged:(UISwitch *)sender {
+    NSString *key = nil;
+    if (sender == _noBadgeSwitch) key = @"noBadge";
+    else if (sender == _noPreviewSwitch) key = @"noPreview";
+    else if (sender == _bgNetSwitch) key = @"bgNet";
+    if (!key) return;
+    [NTM_prefs() setBool:sender.on forKey:NTM_key(_appId, key)];
+    [NTM_prefs() synchronize];
+    NTM_postConfigChanged();
+    [self reloadFromPrefs];
+    if (_onFeatChange) _onFeatChange(_appId, key, sender.on);
+}
+
+- (void)keywordTapped {
+    if (_onKeywordEdit) _onKeywordEdit(_appId);
+}
+- (void)groupTapped {
+    if (_onGroupPick) _onGroupPick(_appId);
 }
 
 - (void)resetTapped {
     NSUserDefaults *prefs = NTM_prefs();
     [prefs setBool:YES forKey:NTM_key(_appId, @"en")];
     for (NSDictionary *d in NTM_dims()) [prefs setBool:YES forKey:NTM_key(_appId, d[@"key"])];
+    [prefs setBool:NO forKey:NTM_key(_appId, @"noBadge")];
+    [prefs setBool:NO forKey:NTM_key(_appId, @"noPreview")];
+    [prefs setBool:NO forKey:NTM_key(_appId, @"bgNet")];
+    [prefs removeObjectForKey:NTM_key(_appId, @"kw")];
     [prefs synchronize];
     NTM_postConfigChanged();
     [self reloadFromPrefs];
@@ -614,24 +773,109 @@ static NSArray *NTM_allApps(void) {
     BOOL en = NTM_read(_appId, @"en");
     _masterSwitch.on = en;
     NSArray *dims = NTM_dims();
-    // 声音/标记依赖：总开关开启 且 锁屏/通知中心/横幅至少一个开启 才可点
     BOOL anyVisible = NTM_read(_appId, @"lock") || NTM_read(_appId, @"nc") || NTM_read(_appId, @"banner");
     BOOL soundBadgeEnabled = en && anyVisible;
     for (NSUInteger i = 0; i < dims.count && i < _dimSwitches.count; i++) {
         UISwitch *sw = _dimSwitches[i];
         sw.on = NTM_read(_appId, dims[i][@"key"]);
-        if (i == 3 || i == 4) { // 声音/标记
-            sw.enabled = soundBadgeEnabled;
-        }
+        if (i == 3 || i == 4) sw.enabled = soundBadgeEnabled;
     }
+    _noBadgeSwitch.on = NTM_feat(_appId, @"noBadge");
+    _noPreviewSwitch.on = NTM_feat(_appId, @"noPreview");
+    _bgNetSwitch.on = NTM_feat(_appId, @"bgNet");
     [self updateNetButtons];
+    [self reloadStatus];
 }
 
+@end
+
+#pragma mark - 拦截日志页
+@implementation NTMLogViewController {
+    NSArray *_entries;
+    NSArray *_typeMaps;
+    UIBarButtonItem *_emptyBtn;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"拦截日志";
+    self.overrideUserInterfaceStyle = UIUserInterfaceStyleLight;
+    self.view.backgroundColor = [UIColor colorWithRed:0.95 green:0.96 blue:0.98 alpha:1];
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"完成"
+                                                                             style:UIBarButtonItemStylePlain
+                                                                            target:self action:@selector(done)];
+    _emptyBtn = [[UIBarButtonItem alloc] initWithTitle:@"清空" style:UIBarButtonItemStylePlain target:self action:@selector(clearLog)];
+    self.navigationItem.rightBarButtonItem = _emptyBtn;
+    _typeMaps = @[
+        @{@"k":@"notif", @"t":@"拦截通知", @"c":[UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:1]},
+        @{@"k":@"banner", @"t":@"拦截横幅", @"c":[UIColor colorWithRed:0.95 green:0.60 blue:0.15 alpha:1]},
+        @{@"k":@"sound", @"t":@"拦截声音", @"c":[UIColor colorWithRed:0.30 green:0.55 blue:1.0 alpha:1]},
+        @{@"k":@"badge", @"t":@"角标", @"c":[UIColor colorWithRed:0.55 green:0.40 blue:0.90 alpha:1]},
+        @{@"k":@"kw", @"t":@"关键词过滤", @"c":[UIColor colorWithRed:0.87 green:0.35 blue:0.55 alpha:1]},
+        @{@"k":@"bgNet", @"t":@"后台断网", @"c":[UIColor colorWithRed:0.42 green:0.75 blue:0.50 alpha:1]},
+    ];
+    [self reloadEntries];
+}
+- (void)done { [self dismissViewControllerAnimated:YES completion:nil]; }
+- (void)reloadEntries {
+    NSArray *arr = [NTM_prefs() objectForKey:@"NTM_log"];
+    _entries = [arr isKindOfClass:[NSArray class]] ? arr : @[];
+    [self.tableView reloadData];
+}
+- (void)clearLog {
+    [NTM_prefs() removeObjectForKey:@"NTM_log"];
+    [NTM_prefs() synchronize];
+    [self reloadEntries];
+}
+- (NSString *)typeTitle:(NSString *)key {
+    for (NSDictionary *m in _typeMaps) if ([m[@"k"] isEqualToString:key]) return m[@"t"];
+    return key;
+}
+- (UIColor *)typeColor:(NSString *)key {
+    for (NSDictionary *m in _typeMaps) if ([m[@"k"] isEqualToString:key]) return m[@"c"];
+    return [UIColor grayColor];
+}
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return _entries.count; }
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath { return 62; }
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"log"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"log"];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.layer.cornerRadius = 12;
+        cell.clipsToBounds = YES;
+    }
+    NSDictionary *e = _entries[indexPath.row];
+    NSString *app = NTM_dispName(e[@"app"] ?: @"");
+    NSString *type = e[@"type"] ?: @"";
+    cell.textLabel.text = app;
+    cell.textLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+    cell.textLabel.textColor = [UIColor colorWithWhite:0.15 alpha:1];
+    double ts = [e[@"t"] doubleValue];
+    NSDate *date = [NSDate dateWithTimeIntervalSince1970:ts];
+    NSDateFormatter *df = [[NSDateFormatter alloc] init];
+    df.dateFormat = @"MM-dd HH:mm:ss";
+    NSString *time = [df stringFromDate:date];
+    NSString *detail = e[@"d"] ?: @"";
+    NSString *typeTitle = [self typeTitle:type];
+    cell.detailTextLabel.text = [NSString stringWithFormat:@"%@  %@  %@", time, typeTitle, detail];
+    cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
+    cell.detailTextLabel.textColor = [UIColor colorWithWhite:0.45 alpha:1];
+    UIColor *c = [self typeColor:type];
+    UIView *badge = [[UIView alloc] initWithFrame:CGRectMake(0, 16, 4, 30)];
+    badge.backgroundColor = c;
+    badge.layer.cornerRadius = 2;
+    cell.contentView.backgroundColor = [UIColor whiteColor];
+    for (UIView *v in cell.contentView.subviews) if ([v isKindOfClass:[UIView class]] && v.tag == 9999) [v removeFromSuperview];
+    badge.tag = 9999;
+    [cell.contentView addSubview:badge];
+    return cell;
+}
 @end
 
 #pragma mark - 控制器
 @implementation NTMPrincipalController {
     UISegmentedControl *_catSeg;
+    UISegmentedControl *_filterSeg;
     UISearchBar *_searchBar;
     UILabel *_statLabel;
     UITableView *_tableView;
@@ -640,10 +884,10 @@ static NSArray *NTM_allApps(void) {
     NSArray *_curApps;
     NSString *_curCat;
     NSString *_searchText;
-    NSMutableDictionary *_snapshot; // 批量操作前的快照 {appId: {dim: BOOL}}
+    NSInteger _filter; // 0全部 1已开启 2已关闭 3断网
+    NSMutableDictionary *_snapshot;
 }
 
-// PreferenceLoader/PSListController 集成方法（自定义 UI 不使用，仅避免 unrecognized selector 崩溃）
 - (void)setRootController:(id)rootController {}
 - (void)setParentController:(id)parentController {}
 - (void)setSpecifier:(id)specifier {}
@@ -667,11 +911,14 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     self.view.backgroundColor = [UIColor colorWithRed:0.95 green:0.96 blue:0.98 alpha:1];
     _curCat = @"用户应用";
     _searchText = @"";
+    _filter = 0;
     _snapshot = [NSMutableDictionary dictionary];
 
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"反馈"
+                                                                             style:UIBarButtonItemStylePlain
+                                                                            target:self action:@selector(feedback)];
     [self buildUI];
 
-    // 异步加载应用列表，避免进入面板卡顿
     _spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
     _spinner.translatesAutoresizingMaskIntoConstraints = NO;
     [_spinner startAnimating];
@@ -695,17 +942,19 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     _catSeg.selectedSegmentIndex = 0;
     [_catSeg addTarget:self action:@selector(catChanged) forControlEvents:UIControlEventValueChanged];
 
-    // 批量操作按钮：全部开启 / 全部关闭 / 自定义(恢复快照)
+    _filterSeg = [[UISegmentedControl alloc] initWithItems:@[@"全部", @"已开启", @"已关闭", @"断网"]];
+    _filterSeg.selectedSegmentIndex = 0;
+    _filterSeg.tintColor = [UIColor colorWithRed:0.45 green:0.62 blue:0.98 alpha:1];
+    [_filterSeg addTarget:self action:@selector(filterChanged) forControlEvents:UIControlEventValueChanged];
+
     UIButton *allOnBtn = NTM_pillButton(@"全部开启",
         [UIColor colorWithRed:0.45 green:0.78 blue:0.54 alpha:0.18],
         [UIColor colorWithRed:0.13 green:0.55 blue:0.24 alpha:1]);
     [allOnBtn addTarget:self action:@selector(allOnTapped) forControlEvents:UIControlEventTouchUpInside];
-
     UIButton *allOffBtn = NTM_pillButton(@"全部关闭",
         [UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:0.15],
         [UIColor colorWithRed:0.72 green:0.17 blue:0.17 alpha:1]);
     [allOffBtn addTarget:self action:@selector(allOffTapped) forControlEvents:UIControlEventTouchUpInside];
-
     UIButton *customBtn = NTM_pillButton(@"自定义",
         [UIColor colorWithRed:0.55 green:0.58 blue:0.65 alpha:0.18],
         [UIColor colorWithWhite:0.35 alpha:1]);
@@ -715,6 +964,24 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     batchRow.axis = UILayoutConstraintAxisHorizontal;
     batchRow.distribution = UIStackViewDistributionFillEqually;
     batchRow.spacing = 10;
+
+    UIButton *snapBtn = NTM_pillButton(@"模式快照",
+        [UIColor colorWithRed:0.55 green:0.40 blue:0.90 alpha:0.15],
+        [UIColor colorWithRed:0.45 green:0.30 blue:0.85 alpha:1]);
+    [snapBtn addTarget:self action:@selector(snapshotTapped) forControlEvents:UIControlEventTouchUpInside];
+    UIButton *grpBtn = NTM_pillButton(@"应用分组",
+        [UIColor colorWithRed:0.30 green:0.66 blue:0.95 alpha:0.15],
+        [UIColor colorWithRed:0.15 green:0.45 blue:0.78 alpha:1]);
+    [grpBtn addTarget:self action:@selector(groupManagerTapped) forControlEvents:UIControlEventTouchUpInside];
+    UIButton *logBtn = NTM_pillButton(@"拦截日志",
+        [UIColor colorWithRed:0.95 green:0.60 blue:0.15 alpha:0.15],
+        [UIColor colorWithRed:0.85 green:0.50 blue:0.08 alpha:1]);
+    [logBtn addTarget:self action:@selector(logTapped) forControlEvents:UIControlEventTouchUpInside];
+
+    UIStackView *featRow = [[UIStackView alloc] initWithArrangedSubviews:@[snapBtn, grpBtn, logBtn]];
+    featRow.axis = UILayoutConstraintAxisHorizontal;
+    featRow.distribution = UIStackViewDistributionFillEqually;
+    featRow.spacing = 10;
 
     _searchBar = [[UISearchBar alloc] init];
     _searchBar.placeholder = @"搜索应用名称";
@@ -732,21 +999,19 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     _tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
     _tableView.backgroundColor = [UIColor clearColor];
     _tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
-    _tableView.rowHeight = 134; // 卡片 122 + 上下间距 12
+    _tableView.rowHeight = 300; // 卡片 288 + 上下间距 12
     _tableView.contentInset = UIEdgeInsetsMake(4, 0, 4, 0);
 
     UIButton *exportBtn = NTM_pillButton(@"导出配置",
         [UIColor colorWithRed:0.35 green:0.56 blue:1.0 alpha:0.15],
         [UIColor colorWithRed:0.17 green:0.35 blue:0.72 alpha:1]);
     [exportBtn addTarget:self action:@selector(exportConfig) forControlEvents:UIControlEventTouchUpInside];
-
     UIButton *importBtn = NTM_pillButton(@"导入配置",
         [UIColor colorWithRed:0.45 green:0.78 blue:0.54 alpha:0.18],
         [UIColor colorWithRed:0.13 green:0.55 blue:0.24 alpha:1]);
     [importBtn addTarget:self action:@selector(importConfig) forControlEvents:UIControlEventTouchUpInside];
 
-    // 表格先加入(置于最底层)，其余控件在其上层，避免任何控件被表格遮挡导致无法点击
-    for (UIView *v in @[_tableView, batchRow, _statLabel, _searchBar, _catSeg, exportBtn, importBtn]) {
+    for (UIView *v in @[_tableView, batchRow, featRow, _statLabel, _searchBar, _filterSeg, _catSeg, exportBtn, importBtn]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [self.view addSubview:v];
     }
@@ -758,7 +1023,12 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [batchRow.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
         [batchRow.heightAnchor constraintEqualToConstant:40],
 
-        [_statLabel.topAnchor constraintEqualToAnchor:batchRow.bottomAnchor constant:8],
+        [featRow.topAnchor constraintEqualToAnchor:batchRow.bottomAnchor constant:8],
+        [featRow.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
+        [featRow.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
+        [featRow.heightAnchor constraintEqualToConstant:38],
+
+        [_statLabel.topAnchor constraintEqualToAnchor:featRow.bottomAnchor constant:8],
         [_statLabel.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:20],
         [_statLabel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-20],
 
@@ -766,7 +1036,11 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [_searchBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:8],
         [_searchBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-8],
 
-        [_catSeg.topAnchor constraintEqualToAnchor:_searchBar.bottomAnchor constant:2],
+        [_filterSeg.topAnchor constraintEqualToAnchor:_searchBar.bottomAnchor constant:2],
+        [_filterSeg.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
+        [_filterSeg.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
+
+        [_catSeg.topAnchor constraintEqualToAnchor:_filterSeg.bottomAnchor constant:6],
         [_catSeg.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
         [_catSeg.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
 
@@ -779,7 +1053,6 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [exportBtn.trailingAnchor constraintEqualToAnchor:importBtn.leadingAnchor constant:-12],
         [exportBtn.widthAnchor constraintEqualToAnchor:importBtn.widthAnchor],
 
-        // 列表位于分类栏之下，不遮挡任何控件
         [_tableView.topAnchor constraintEqualToAnchor:_catSeg.bottomAnchor constant:12],
         [_tableView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [_tableView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
@@ -794,14 +1067,8 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
 }
 
 #pragma mark - UITableViewDataSource
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return _curApps.count;
-}
-
-// 所有 App 卡片统一高度（含网络按钮行）
-- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    return 178;
-}
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return _curApps.count; }
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath { return 300; }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"card"];
@@ -814,7 +1081,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
 
     NSDictionary *app = _curApps[indexPath.row];
     NTMAppCardView *card = [[NTMAppCardView alloc] initWithApp:app];
-    [card reloadFromPrefs]; // 加载实际开关状态，避免重建后全部显示为关
+    [card reloadFromPrefs];
     card.translatesAutoresizingMaskIntoConstraints = NO;
     [cell.contentView addSubview:card];
     [NSLayoutConstraint activateConstraints:@[
@@ -828,6 +1095,9 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     card.onMasterChange = ^(NSString *aid, BOOL val) { [ws refreshStat]; };
     card.onNetChange = ^(NSString *aid, NSInteger policy) { [ws refreshStat]; };
     card.onReset = ^(NSString *aid) { [ws refreshStat]; };
+    card.onFeatChange = ^(NSString *aid, NSString *key, BOOL val) { [ws refreshStat]; };
+    card.onKeywordEdit = ^(NSString *aid) { [ws editKeyword:aid]; };
+    card.onGroupPick = ^(NSString *aid) { [ws pickGroup:aid]; };
     return cell;
 }
 
@@ -836,7 +1106,6 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     NSMutableArray *filtered = [NSMutableArray array];
     for (NSDictionary *app in _allApps) {
         if (_searchText.length) {
-            // 搜索时跨分类查找，保证能搜到目标 App
             NSString *name = app[@"name"];
             NSString *bid = app[@"id"];
             if (![name localizedCaseInsensitiveContainsString:_searchText] &&
@@ -844,13 +1113,16 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         } else {
             if (![app[@"cat"] isEqualToString:_curCat]) continue;
         }
+        if (_filter == 1) { if (!NTM_read(app[@"id"], @"en")) continue; }
+        else if (_filter == 2) { if (NTM_read(app[@"id"], @"en")) continue; }
+        else if (_filter == 3) { if (NTM_netRead(app[@"id"]) != 1) continue; }
         [filtered addObject:app];
     }
     _curApps = filtered;
 
     if (!filtered.count) {
         UILabel *empty = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 260, 80)];
-        empty.text = @"该分类暂无应用";
+        empty.text = @"暂无应用";
         empty.font = [UIFont systemFontOfSize:14];
         empty.textColor = [UIColor colorWithWhite:0.55 alpha:1];
         empty.textAlignment = NSTextAlignmentCenter;
@@ -858,19 +1130,15 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     } else {
         _tableView.backgroundView = nil;
     }
-
     [_tableView reloadData];
     [self refreshStat];
     [self hideSpinner];
 }
 
-// 批量操作后直接刷新可见卡片开关，避免重建列表
 - (void)refreshAllCards {
     for (UITableViewCell *cell in _tableView.visibleCells) {
         for (UIView *v in cell.contentView.subviews) {
-            if ([v isKindOfClass:[NTMAppCardView class]]) {
-                [(NTMAppCardView *)v reloadFromPrefs];
-            }
+            if ([v isKindOfClass:[NTMAppCardView class]]) [(NTMAppCardView *)v reloadFromPrefs];
         }
     }
 }
@@ -883,9 +1151,10 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         if (NTM_readWith(prefs, aid, @"en")) on++;
         total++;
     }
-    NSString *scope = _searchText.length ? [NSString stringWithFormat:@"搜索：%@", _searchText] : _curCat;
-    _statLabel.text = [NSString stringWithFormat:@"%@    已开启 %ld / %ld 个应用",
-                       scope, (long)on, (long)total];
+    NSString *scope = _searchText.length ? [NSString stringWithFormat:@"搜索：%@", _searchText]
+                     : (_filter ? [NSString stringWithFormat:@"%@ / %@", _curCat, @[@"", @"已开启", @"已关闭", @"断网"][_filter]]
+                                : _curCat);
+    _statLabel.text = [NSString stringWithFormat:@"%@    已开启 %ld / %ld 个应用", scope, (long)on, (long)total];
 }
 
 #pragma mark - 交互
@@ -894,33 +1163,15 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     _curCat = cats[_catSeg.selectedSegmentIndex];
     [self reloadList];
 }
+- (void)filterChanged { _filter = _filterSeg.selectedSegmentIndex; [self reloadList]; }
 
-- (void)allOnTapped {
-    [self saveSnapshot];
-    [self batchWrite:YES];
-    [self refreshAllCards];
-    [self refreshStat];
-}
+- (void)allOnTapped { [self saveSnapshot]; [self batchWrite:YES]; [self refreshAllCards]; [self refreshStat]; }
+- (void)allOffTapped { [self saveSnapshot]; [self batchWrite:NO]; [self refreshAllCards]; [self refreshStat]; }
+- (void)customTapped { [self restoreSnapshot]; [self refreshAllCards]; [self refreshStat]; }
 
-- (void)allOffTapped {
-    [self saveSnapshot];
-    [self batchWrite:NO];
-    [self refreshAllCards];
-    [self refreshStat];
-}
-
-- (void)customTapped {
-    [self restoreSnapshot];
-    [self refreshAllCards];
-    [self refreshStat];
-}
-
-// 批量写入：内存写入即时生效，磁盘落盘与系统同步放后台串行队列，避免主线程卡顿
-// 联动网络：所有 App 生效，开启=wifi+流量(0)，关闭=断网(1)
 - (void)batchWrite:(BOOL)val {
     NSUserDefaults *prefs = NTM_prefs();
     NSMutableArray *ids = [NSMutableArray array];
-    NSMutableArray *netIds = [NSMutableArray array];
     NSInteger netPolicy = val ? 0 : 1;
     for (NSDictionary *app in _curApps) {
         NSString *aid = app[@"id"];
@@ -928,15 +1179,16 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [prefs setBool:val forKey:NTM_key(aid, @"en")];
         for (NSDictionary *d in NTM_dims()) [prefs setBool:val forKey:NTM_key(aid, d[@"key"])];
         [prefs setInteger:netPolicy forKey:NTM_netKey(aid)];
-        [netIds addObject:aid];
+        if (!val) {
+            [prefs setBool:NO forKey:NTM_key(aid, @"bgNet")]; // 全部关闭时顺带关后台断网
+        }
     }
     NSArray *idsCopy = [ids copy];
-    NSArray *netIdsCopy = [netIds copy];
     dispatch_async(NTM_syncQueue(), ^{
         [prefs synchronize];
         NTM_postConfigChanged();
         for (NSString *aid in idsCopy) NTM_syncSystem(aid);
-        for (NSString *aid in netIdsCopy) NTM_syncCellular(aid, netPolicy);
+        for (NSString *aid in idsCopy) NTM_syncCellular(aid, netPolicy);
     });
 }
 
@@ -952,7 +1204,6 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         _snapshot[aid] = d;
     }
 }
-
 - (void)restoreSnapshot {
     NSUserDefaults *prefs = NTM_prefs();
     for (NSString *aid in _snapshot) {
@@ -964,20 +1215,231 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
             if (v) [prefs setBool:[v boolValue] forKey:NTM_key(aid, dim[@"key"])];
         }
         id net = d[@"net"];
-        if (net) {
-            [prefs setInteger:[net integerValue] forKey:NTM_netKey(aid)];
-            NTM_syncCellularAsync(aid, [net integerValue]);
-        }
+        if (net) { [prefs setInteger:[net integerValue] forKey:NTM_netKey(aid)]; NTM_syncCellularAsync(aid, [net integerValue]); }
         NTM_syncSystemAsync(aid);
     }
     dispatch_async(NTM_syncQueue(), ^{ [prefs synchronize]; NTM_postConfigChanged(); });
+}
+
+#pragma mark - Alert/Sheet 弹出（统一设置 popover 来源，避免 iPad 崩溃）
+- (void)showAlertController:(UIAlertController *)ac {
+    ac.popoverPresentationController.sourceView = self.view;
+    ac.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width/2, self.view.bounds.size.height-40, 1, 1);
+    [self presentViewController:ac animated:YES completion:nil];
+}
+
+#pragma mark - 模式快照（持久化，一键回滚）
+- (void)snapshotTapped {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"模式快照"
+                                                                message:@"保存当前全部App的通知+网络配置，可随时一键回滚"
+                                                         preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"保存当前配置为快照" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        [self snapshotSave];
+    }]];
+    BOOL has = [[NTM_prefs() objectForKey:@"NTM_snapshot"] isKindOfClass:[NSDictionary class]];
+    if (has) {
+        [ac addAction:[UIAlertAction actionWithTitle:@"恢复已保存的快照" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            [self snapshotRestore];
+        }]];
+        [ac addAction:[UIAlertAction actionWithTitle:@"删除已保存的快照" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
+            [NTM_prefs() removeObjectForKey:@"NTM_snapshot"];
+            [NTM_prefs() synchronize];
+            [self toast:@"已删除快照"];
+        }]];
+    } else {
+        [ac addAction:[UIAlertAction actionWithTitle:@"恢复已保存的快照" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            [self toast:@"还没有保存过快照"];
+        }]];
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self showAlertController:ac];
+}
+- (void)snapshotSave {
+    NSMutableDictionary *snap = [NSMutableDictionary dictionary];
+    for (NSDictionary *app in _allApps) {
+        NSString *aid = app[@"id"];
+        NSMutableDictionary *d = [NSMutableDictionary dictionary];
+        d[@"en"] = @(NTM_read(aid, @"en"));
+        NSMutableDictionary *dims = [NSMutableDictionary dictionary];
+        for (NSDictionary *dim in NTM_dims()) dims[dim[@"key"]] = @(NTM_read(aid, dim[@"key"]));
+        d[@"dims"] = dims;
+        d[@"net"] = @(NTM_netRead(aid));
+        d[@"noBadge"] = @(NTM_feat(aid, @"noBadge"));
+        d[@"noPreview"] = @(NTM_feat(aid, @"noPreview"));
+        d[@"bgNet"] = @(NTM_feat(aid, @"bgNet"));
+        d[@"kw"] = NTM_kwList(aid);
+        NSString *grp = [NTM_prefs() objectForKey:NTM_key(aid, @"group")];
+        if (grp.length) d[@"group"] = grp;
+        snap[aid] = d;
+    }
+    [NTM_prefs() setObject:snap forKey:@"NTM_snapshot"];
+    [NTM_prefs() synchronize];
+    [self toast:[NSString stringWithFormat:@"已保存 %lu 个应用为快照", (unsigned long)snap.count]];
+}
+- (void)snapshotRestore {
+    id snap = [NTM_prefs() objectForKey:@"NTM_snapshot"];
+    if (![snap isKindOfClass:[NSDictionary class]]) return;
+    NSUserDefaults *prefs = NTM_prefs();
+    NSMutableArray *ids = [NSMutableArray array];
+    for (NSString *aid in snap) {
+        NSDictionary *d = snap[aid];
+        [ids addObject:aid];
+        id en = d[@"en"]; if (en) [prefs setBool:[en boolValue] forKey:NTM_key(aid, @"en")];
+        NSDictionary *dims = d[@"dims"];
+        if ([dims isKindOfClass:[NSDictionary class]]) for (NSString *k in dims) [prefs setBool:[dims[k] boolValue] forKey:NTM_key(aid, k)];
+        id net = d[@"net"];
+        if (net) [prefs setInteger:[net integerValue] forKey:NTM_netKey(aid)];
+        if (d[@"noBadge"]) [prefs setBool:[d[@"noBadge"] boolValue] forKey:NTM_key(aid, @"noBadge")];
+        if (d[@"noPreview"]) [prefs setBool:[d[@"noPreview"] boolValue] forKey:NTM_key(aid, @"noPreview")];
+        if (d[@"bgNet"]) [prefs setBool:[d[@"bgNet"] boolValue] forKey:NTM_key(aid, @"bgNet")];
+        NSArray *kw = d[@"kw"];
+        if (kw) { [prefs removeObjectForKey:NTM_key(aid, @"kw")]; if ([kw isKindOfClass:[NSArray class]] && kw.count) NTM_kwSave(aid, kw); }
+        if (d[@"group"]) [prefs setObject:d[@"group"] forKey:NTM_key(aid, @"group")];
+    }
+    NSArray *idsCopy = [ids copy];
+    dispatch_async(NTM_syncQueue(), ^{
+        [prefs synchronize]; NTM_postConfigChanged();
+        for (NSString *aid in idsCopy) { NTM_syncSystem(aid); NTM_syncCellular(aid, NTM_netRead(aid)); }
+    });
+    [self refreshAllCards];
+    [self refreshStat];
+    [self toast:[NSString stringWithFormat:@"已恢复 %lu 个应用", (unsigned long)ids.count]];
+}
+
+#pragma mark - 应用分组
+- (void)groupManagerTapped {
+    NSArray *names = NTM_groupNames();
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"应用分组"
+                                                                message:names.count ? @"选中的整组可批量操作" : @"还没有分组，先新建一个"
+                                                         preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSString *name in names) {
+        [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ 分组", name]
+                                               style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ [self groupOps:name]; }]];
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"新建分组" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ [self promptNewGroup]; }]];
+    if (names.count)
+        [ac addAction:[UIAlertAction actionWithTitle:@"管理分组（删除）" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){ [self manageGroups]; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self showAlertController:ac];
+}
+- (void)promptNewGroup {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"新建分组" message:@"输入分组名称（如：社交、游戏、短视频）" preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.placeholder = @"分组名称"; }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"创建" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        NTM_addGroupName(ac.textFields.firstObject.text);
+        [self toast:@"已创建分组"];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self showAlertController:ac];
+}
+- (void)manageGroups {
+    NSArray *names = NTM_groupNames();
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"管理分组" message:@"点击删除分组" preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSString *name in names) {
+        [ac addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"删除 %@", name] style:UIAlertActionStyleDestructive handler:^(UIAlertAction *a){
+            NTM_removeGroupName(name);
+            [self refreshAllCards];
+            [self toast:[NSString stringWithFormat:@"已删除分组 %@", name]];
+        }]];
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self showAlertController:ac];
+}
+- (NSArray *)appIdsOfGroup:(NSString *)name {
+    NSMutableArray *ids = [NSMutableArray array];
+    for (NSDictionary *app in _allApps) {
+        NSString *g = [NTM_prefs() objectForKey:NTM_key(app[@"id"], @"group")];
+        if ([g isEqualToString:name]) [ids addObject:app[@"id"]];
+    }
+    return ids;
+}
+- (void)groupOps:(NSString *)name {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"%@ 分组", name] message:@"整组批量操作" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"整组全部开启" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ [self groupBatch:name en:YES]; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"整组全部关闭" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ [self groupBatch:name en:NO]; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"整组断网" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ [self groupNetOff:name]; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self showAlertController:ac];
+}
+- (void)groupBatch:(NSString *)name en:(BOOL)en {
+    NSUserDefaults *prefs = NTM_prefs();
+    NSArray *ids = [self appIdsOfGroup:name];
+    for (NSString *aid in ids) {
+        [prefs setBool:en forKey:NTM_key(aid, @"en")];
+        for (NSDictionary *d in NTM_dims()) [prefs setBool:en forKey:NTM_key(aid, d[@"key"])];
+        [prefs setInteger:(en ? 0 : 1) forKey:NTM_netKey(aid)];
+    }
+    NSArray *copy = [ids copy];
+    dispatch_async(NTM_syncQueue(), ^{ [prefs synchronize]; NTM_postConfigChanged();
+        for (NSString *aid in copy) { NTM_syncSystem(aid); NTM_syncCellular(aid, en?0:1); } });
+    [self refreshAllCards]; [self refreshStat];
+    [self toast:[NSString stringWithFormat:@"%@：已%@ %lu 个应用", name, en?@"开启":@"关闭", (unsigned long)ids.count]];
+}
+- (void)groupNetOff:(NSString *)name {
+    NSUserDefaults *prefs = NTM_prefs();
+    NSArray *ids = [self appIdsOfGroup:name];
+    for (NSString *aid in ids) [prefs setInteger:1 forKey:NTM_netKey(aid)];
+    NSArray *copy = [ids copy];
+    dispatch_async(NTM_syncQueue(), ^{ [prefs synchronize]; NTM_postConfigChanged();
+        for (NSString *aid in copy) NTM_syncCellular(aid, 1); });
+    [self refreshAllCards]; [self refreshStat];
+    [self toast:[NSString stringWithFormat:@"%@：已断网 %lu 个应用", name, (unsigned long)ids.count]];
+}
+- (void)pickGroup:(NSString *)aid {
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:NTM_dispName(aid) message:@"选择分组" preferredStyle:UIAlertControllerStyleActionSheet];
+    [ac addAction:[UIAlertAction actionWithTitle:@"未分组" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        NTM_setGroup(aid, @""); [self refreshAllCards];
+    }]];
+    for (NSString *name in NTM_groupNames()) {
+        [ac addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+            NTM_setGroup(aid, name); [self refreshAllCards];
+        }]];
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"新建分组" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){ [self promptNewGroup]; }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self showAlertController:ac];
+}
+
+#pragma mark - 关键词过滤
+- (void)editKeyword:(NSString *)aid {
+    NSArray *list = NTM_kwList(aid);
+    NSString *text = [list componentsJoinedByString:@","];
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"关键词过滤" message:@"输入关键词，用逗号或分号分隔；命中即拦截该条通知" preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *tf){ tf.text = text; tf.placeholder = @"如：广告,优惠券,营销"; }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a){
+        NSString *v = ac.textFields.firstObject.text ?: @"";
+        NSMutableArray *kws = [NSMutableArray array];
+        for (NSString *part in [v componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@",，;；"]]) {
+            NSString *t = [part stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            if (t.length) [kws addObject:t];
+        }
+        NTM_kwSave(aid, kws);
+        [self refreshAllCards];
+        [self toast:kws.count ? [NSString stringWithFormat:@"已设置 %lu 个关键词", (unsigned long)kws.count] : @"已清除关键词"];
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [self showAlertController:ac];
+}
+
+#pragma mark - 拦截日志
+- (void)logTapped {
+    NTMLogViewController *vc = [[NTMLogViewController alloc] initWithStyle:UITableViewStylePlain];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+    nav.modalPresentationStyle = UIModalPresentationFullScreen;
+    [self presentViewController:nav animated:YES completion:nil];
+}
+
+#pragma mark - 反馈
+- (void)feedback {
+    NSString *subject = [@"通知管理插件反馈" stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"mailto:wacljcr@qq.com?subject=%@", subject]];
+    [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
 }
 
 #pragma mark - 导入/导出
 - (NSString *)configPath {
     return [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/NotifyManagerConfig.json"];
 }
-
 - (void)exportConfig {
     NSMutableArray *arr = [NSMutableArray array];
     for (NSDictionary *app in _allApps) {
@@ -990,28 +1452,31 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         for (NSDictionary *dim in NTM_dims()) dims[dim[@"key"]] = @(NTM_read(aid, dim[@"key"]));
         d[@"dims"] = dims;
         d[@"net"] = @(NTM_netRead(aid));
+        d[@"noBadge"] = @(NTM_feat(aid, @"noBadge"));
+        d[@"noPreview"] = @(NTM_feat(aid, @"noPreview"));
+        d[@"bgNet"] = @(NTM_feat(aid, @"bgNet"));
+        d[@"kw"] = NTM_kwList(aid);
+        NSString *grp = [NTM_prefs() objectForKey:NTM_key(aid, @"group")];
+        if (grp.length) d[@"group"] = grp;
         [arr addObject:d];
     }
     NSData *data = [NSJSONSerialization dataWithJSONObject:arr options:NSJSONWritingPrettyPrinted error:nil];
     if (!data) { [self toast:@"导出失败"]; return; }
     NSString *path = [self configPath];
     if (![data writeToFile:path atomically:YES]) { [self toast:@"导出失败，无写入权限"]; return; }
-    [self toast:[NSString stringWithFormat:@"已导出 %lu 个应用\n%@", (unsigned long)arr.count, path]];
-    // 弹出分享面板，方便保存到"文件"App
+    [self toast:[NSString stringWithFormat:@"已导出 %lu 个应用", (unsigned long)arr.count]];
     NSURL *url = [NSURL fileURLWithPath:path];
     UIActivityViewController *avc = [[UIActivityViewController alloc] initWithActivityItems:@[url] applicationActivities:nil];
     avc.popoverPresentationController.sourceView = self.view;
     avc.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width/2, self.view.bounds.size.height/2, 1, 1);
     [self presentViewController:avc animated:YES completion:nil];
 }
-
 - (void)importConfig {
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc]
         initWithDocumentTypes:@[@"public.json", @"public.data"] inMode:UIDocumentPickerModeImport];
     picker.delegate = self;
     [self presentViewController:picker animated:YES completion:nil];
 }
-
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     NSURL *url = urls.firstObject;
     if (!url) return;
@@ -1027,16 +1492,16 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         id en = d[@"en"];
         if (en) [prefs setBool:[en boolValue] forKey:NTM_key(aid, @"en")];
         NSDictionary *dims = d[@"dims"];
-        if ([dims isKindOfClass:[NSDictionary class]]) {
-            for (NSString *k in dims) {
-                [prefs setBool:[dims[k] boolValue] forKey:NTM_key(aid, k)];
-            }
-        }
+        if ([dims isKindOfClass:[NSDictionary class]]) for (NSString *k in dims) [prefs setBool:[dims[k] boolValue] forKey:NTM_key(aid, k)];
         id net = d[@"net"];
-        if (net) {
-            [prefs setInteger:[net integerValue] forKey:NTM_netKey(aid)];
-            NTM_syncCellularAsync(aid, [net integerValue]);
-        }
+        if (net) { [prefs setInteger:[net integerValue] forKey:NTM_netKey(aid)]; NTM_syncCellularAsync(aid, [net integerValue]); }
+        if (d[@"noBadge"]) [prefs setBool:[d[@"noBadge"] boolValue] forKey:NTM_key(aid, @"noBadge")];
+        if (d[@"noPreview"]) [prefs setBool:[d[@"noPreview"] boolValue] forKey:NTM_key(aid, @"noPreview")];
+        if (d[@"bgNet"]) [prefs setBool:[d[@"bgNet"] boolValue] forKey:NTM_key(aid, @"bgNet")];
+        NSArray *kw = d[@"kw"];
+        if ([kw isKindOfClass:[NSArray class]]) { [prefs removeObjectForKey:NTM_key(aid, @"kw")]; if (kw.count) NTM_kwSave(aid, kw); }
+        NSString *grp = d[@"group"];
+        if (grp.length) [prefs setObject:grp forKey:NTM_key(aid, @"group")];
         NTM_syncSystemAsync(aid);
         count++;
     }
@@ -1052,9 +1517,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(applySearch) object:nil];
     [self performSelector:@selector(applySearch) withObject:nil afterDelay:0.3];
 }
-- (void)applySearch {
-    [self reloadList];
-}
+- (void)applySearch { [self reloadList]; }
 - (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
     [searchBar resignFirstResponder];
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(applySearch) object:nil];

@@ -1687,15 +1687,7 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
 }
 
 - (void)refresh {
-    // 在 Tweak 耗电 Tab 时，先请求 Tweak 采样，等结果写入后再刷新
-    if (_selectedTab == 1) {
-        notify_post("com.ntm.battery.sample");
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self reloadData];
-        });
-    } else {
-        [self reloadData];
-    }
+    [self reloadData];
 }
 
 - (void)reloadData {
@@ -1980,13 +1972,6 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
                 if (!s) return;
                 s.selectedTab = idx;
                 [s.tableView reloadSections:[NSIndexSet indexSetWithIndex:4] withRowAnimation:UITableViewRowAnimationFade];
-                // 切到 Tweak 耗电 Tab 时请求 Tweak 采样，1.5 秒后刷新显示结果
-                if (idx == 1) {
-                    notify_post("com.ntm.battery.sample");
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                        if (s.selectedTab == 1) [s reloadData];
-                    });
-                }
             };
             return cell;
         }
@@ -2038,12 +2023,12 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
         }
         case 1: {
             if (indexPath.row == 0) {
-                // 表头：Tweak 总 CPU 占用
+                // 表头：已注入 Tweak 列表
                 InfoCell *cell = [tableView dequeueReusableCellWithIdentifier:@"info"];
                 if (!cell) cell = [[InfoCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"info"];
-                cell.keyLabel.text = @"Tweak 总 CPU 占用";
-                cell.valueLabel.text = [self tweakTotalCpuText];
-                cell.valueLabel.textColor = [self tweakTotalCpuColor];
+                cell.keyLabel.text = @"已注入 Tweak 列表";
+                cell.valueLabel.text = [NSString stringWithFormat:@"%ld 个", (long)_tweakList.count];
+                cell.valueLabel.textColor = [UIColor colorWithWhite:0.3 alpha:1];
                 return cell;
             }
             GlassCell *cell = [tableView dequeueReusableCellWithIdentifier:@"glass"];
@@ -2157,29 +2142,10 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
         cell.titleLabel.text = display;
         cell.iconView.image = NTM_letterIcon(name, display);
         cell.subtitleLabel.hidden = NO;
-        NSDictionary *cpu = _data[@"tweakCpu"];
-        NSString *size = NTM_tweakSize(name);
-        if ([cpu isKindOfClass:[NSDictionary class]] && cpu.count && ![cpu[@"_idle"] boolValue]) {
-            double pct = [cpu[name] doubleValue];
-            cell.subtitleLabel.text = [NSString stringWithFormat:@"CPU 约 %.1f%% · 文件 %@", pct, size];
-            cell.valueLabel.text = [NSString stringWithFormat:@"%.1f%%", pct];
-            if (pct >= 5) {
-                cell.valueLabel.textColor = [UIColor systemRedColor];
-            } else if (pct >= 1) {
-                cell.valueLabel.textColor = [UIColor systemOrangeColor];
-            } else {
-                cell.valueLabel.textColor = [UIColor systemGreenColor];
-            }
-        } else if ([cpu isKindOfClass:[NSDictionary class]] && [cpu[@"_idle"] boolValue]) {
-            // 采样完成但所有 Tweak 均空闲（CPU ≈ 0%）
-            cell.subtitleLabel.text = [NSString stringWithFormat:@"文件 %@ · 当前空闲", size];
-            cell.valueLabel.text = @"0%";
-            cell.valueLabel.textColor = [UIColor systemGreenColor];
-        } else {
-            cell.subtitleLabel.text = [NSString stringWithFormat:@"文件 %@ · 暂无数据（点刷新采样）", size];
-            cell.valueLabel.text = @"--";
-            cell.valueLabel.textColor = [UIColor colorWithWhite:0.4 alpha:1];
-        }
+        // CPU 采样已移除（iOS 16.6 线程采样会触发段错误导致安全模式），仅展示注入的 Tweak 与文件大小
+        cell.subtitleLabel.text = [NSString stringWithFormat:@"文件 %@", NTM_tweakSize(name)];
+        cell.valueLabel.text = @"";
+        cell.valueLabel.textColor = [UIColor colorWithWhite:0.4 alpha:1];
     } else {
         cell.titleLabel.text = @"暂无 Tweak 数据（重启 SpringBoard 生效）";
         cell.subtitleLabel.text = @"";

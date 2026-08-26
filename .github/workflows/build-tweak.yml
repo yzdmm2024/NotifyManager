@@ -31,7 +31,7 @@ jobs:
                   -c batteryanalyzer/BatteryPanel.m -o "BatteryPanel_${arch}.o"
             clang -dynamiclib -arch "$arch" -isysroot "$SDK" -miphoneos-version-min=15.0 \
                   -fobjc-exceptions -Wl,-undefined,dynamic_lookup \
-                  -framework UIKit -framework Foundation -framework QuartzCore -framework CoreGraphics \
+                  -framework UIKit -framework Foundation -framework QuartzCore -framework CoreGraphics -framework IOKit \
                   -install_name "@rpath/BatteryPanel.dylib" \
                   -o "BatteryPanel_${arch}.dylib" "BatteryPanel_${arch}.o"
           done

@@ -232,7 +232,7 @@
         _levelLabel = [UILabel new];
         _levelLabel.translatesAutoresizingMaskIntoConstraints = NO;
         _levelLabel.font = [UIFont systemFontOfSize:34 weight:UIFontWeightBold];
-        _levelLabel.textColor = [UIColor systemRedColor];
+        _levelLabel.textColor = [UIColor labelColor];
         _levelLabel.adjustsFontSizeToFitWidth = YES;
         _levelLabel.minimumScaleFactor = 0.5;
         _levelLabel.textAlignment = NSTextAlignmentCenter;
@@ -1620,6 +1620,14 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
     return NO;
 }
 
+// 苹果原生电池颜色：充电=绿，低电量模式=黄，≤20%=红，正常=原生默认色（浅色黑/深色白）
+static UIColor *NTM_batteryColor(NSInteger level, BOOL charging) {
+    if (charging) return [UIColor systemGreenColor];
+    if ([[NSProcessInfo processInfo] isLowPowerModeEnabled]) return [UIColor systemYellowColor];
+    if (level >= 0 && level <= 20) return [UIColor systemRedColor];
+    return [UIColor labelColor];
+}
+
 @implementation NTMBatteryPrincipalController
 
 - (instancetype)init {
@@ -1664,14 +1672,6 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
     self.navigationItem.rightBarButtonItem = refresh;
 
     [self reloadData];
-
-    // 每 5 秒自动刷新（Tweak CPU、App 耗电、充电状态等实时数据）
-    [NSTimer scheduledTimerWithTimeInterval:5.0 repeats:YES block:^(NSTimer *t) {
-        if (!self->_tableView) return;
-        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.ntm.batteryanalyzer.plist"];
-        if (d) self->_data = [d mutableCopy];
-        [self reloadData];
-    }];
 }
 
 - (void)viewDidLayoutSubviews {
@@ -1683,7 +1683,25 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    // 面板打开 → 通知 Tweak 开始采样（关闭时完全静默省电）
+    [self setSampling:YES];
     [self reloadData];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    // 面板关闭 → 通知 Tweak 停止采样
+    [self setSampling:NO];
+}
+
+// 写入 sampling 标记并通知 Tweak 启停后台采样
+- (void)setSampling:(BOOL)on {
+    NSString *plist = @"/var/mobile/Library/Preferences/com.ntm.batteryanalyzer.plist";
+    NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:plist];
+    if (!d) d = [NSMutableDictionary dictionary];
+    d[@"sampling"] = @(on);
+    [d writeToFile:plist atomically:YES];
+    notify_post("com.ntm.battery.control");
 }
 
 - (void)refresh {
@@ -2199,7 +2217,7 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
 - (void)configOverviewCell:(OverviewCardCell *)cell {
     if (_currentLevel >= 0) {
         cell.levelLabel.text = [NSString stringWithFormat:@"%ld%%", (long)_currentLevel];
-        cell.levelLabel.textColor = _charging ? [UIColor systemGreenColor] : [UIColor systemRedColor];
+        cell.levelLabel.textColor = NTM_batteryColor(_currentLevel, _charging);
         cell.ringView.progress = _currentLevel / 100.0;
         if (_currentLevel > 50) cell.ringView.tintColor = [UIColor systemGreenColor];
         else if (_currentLevel > 20) cell.ringView.tintColor = [UIColor systemOrangeColor];

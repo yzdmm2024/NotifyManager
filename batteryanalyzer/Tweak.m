@@ -191,7 +191,7 @@ static NSDictionary *NTM_sampleTweakCpu(void) {
     mach_msg_type_number_t threadCount = 0;
     if (task_threads(mach_task_self(), &threads, &threadCount) != KERN_SUCCESS) return nil;
     @try {
-        for (int round = 0; round < 4; round++) {
+        for (int round = 0; round < 2; round++) {
             for (mach_msg_type_number_t i = 0; i < threadCount; i++) {
                 // 线程实时 CPU 使用率（cpu_usage 单位：百分之一百分比，100 = 1%）
                 thread_basic_info_t basic;
@@ -200,15 +200,16 @@ static NSDictionary *NTM_sampleTweakCpu(void) {
                 if (thread_info(threads[i], THREAD_BASIC_INFO, (thread_info_t)&basic, &bc) == KERN_SUCCESS) {
                     cpu = basic->cpu_usage / 100.0;
                 }
-                // 通过 PC 归属到具体 dylib：直接用 state.__pc 字段（编译器保证正确布局），
-                // 避免硬编码偏移量导致读到垃圾地址引发 dladdr 段错误（段错误无法被 @try 捕获）
+                // 通过偏移读取 PC（不同 SDK 的 arm_thread_state64_t 字段名不同，用偏移最兼容）
+                // arm64 布局：__x[29](232B)+__fp(8)+__lr(8)+__sp(8)+__pc(8) → PC 在 offset 256
                 arm_thread_state64_t state;
                 mach_msg_type_number_t sc = ARM_THREAD_STATE64_COUNT;
                 uint64_t pc = 0;
                 if (thread_get_state(threads[i], ARM_THREAD_STATE64, (thread_state_t)&state, &sc) == KERN_SUCCESS) {
-                    pc = state.__pc;
+                    pc = *(uint64_t *)((uint8_t *)&state + 256);
                 }
-                if (pc) {
+                // 地址范围检查：只处理合理范围内的 PC，防止垃圾地址传给 dladdr 引发段错误（段错误无法被 @try 捕获）
+                if (pc > 0x100000000 && pc < 0x800000000000) {
                     Dl_info info;
                     if (dladdr((const void *)pc, &info) && info.dli_fname) {
                         NSString *name = [NSString stringWithUTF8String:info.dli_fname];

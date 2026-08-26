@@ -1577,13 +1577,17 @@ static NSString *NTM_tweakSize(NSString *dylibName) {
     return @"--";
 }
 
-// 切换飞行模式：用 SpringBoardServices 私有 C 函数 SBSSetAirplaneModeEnabled（任何进程可用，最可靠）
+// 切换飞行模式：用 SpringBoardServices 私有 C 函数 SBSSetAirplaneModeEnabled（注意参数是 CFBooleanRef，传 BOOL 会崩溃）
 static BOOL NTM_setAirplaneMode(BOOL on) {
     void *h = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_LAZY);
     if (!h) return NO;
-    void (*fn)(BOOL) = (void (*)(BOOL))dlsym(h, "SBSSetAirplaneModeEnabled");
+    void (*fn)(CFBooleanRef) = (void (*)(CFBooleanRef))dlsym(h, "SBSSetAirplaneModeEnabled");
     if (!fn) return NO;
-    fn(on);
+    @try {
+        fn(on ? kCFBooleanTrue : kCFBooleanFalse);
+    } @catch (NSException *e) {
+        return NO;
+    }
     return YES;
 }
 
@@ -1594,7 +1598,9 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
     NSString *plist = @"/var/mobile/Library/Preferences/com.ntm.batteryanalyzer.plist";
     NSMutableDictionary *data = [NSMutableDictionary dictionaryWithContentsOfFile:plist];
     if (!data) data = [NSMutableDictionary dictionary];
-    data[@"pendingCommand"] = cmd;
+    NSMutableDictionary *mcmd = [cmd mutableCopy];
+    mcmd[@"at"] = @([[NSDate date] timeIntervalSince1970]);
+    data[@"pendingCommand"] = mcmd;
     [data writeToFile:plist atomically:YES];
     notify_post("com.ntm.battery.command");
     for (int i = 0; i < 40; i++) {

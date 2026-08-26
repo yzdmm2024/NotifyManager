@@ -1,6 +1,6 @@
 Package: com.ntm.batteryanalyzer
 Name: 电池耗电分析
-Version: 1.6.4
+Version: 1.6.5
 Architecture: iphoneos-arm64
 Maintainer: yzdmm2024
 Author: yzdmm2024

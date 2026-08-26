@@ -309,6 +309,22 @@ static void NTM_registerCommandListener(void) {
     });
 }
 
+static int g_sampleToken = 0;
+
+// 按需采样：面板打开 Tweak 耗电 Tab 或点刷新时发通知，收到后采样一次写入 plist。
+// 不自动定时采样，避免 SpringBoard 启动期/空闲期频繁遍历线程触发段错误导致安全模式
+static void NTM_registerSampleListener(void) {
+    notify_register_dispatch("com.ntm.battery.sample", &g_sampleToken, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^(int token) {
+        @try {
+            NSMutableDictionary *data = NTM_load();
+            data[@"tweakCpu"] = NTM_sampleTweakCpu();
+            data[@"tweakCpuAt"] = @([[NSDate date] timeIntervalSince1970]);
+            NTM_save(data);
+        } @catch (NSException *e) {
+        }
+    });
+}
+
 __attribute__((constructor))
 static void NTM_init(void) {
     @try {
@@ -328,6 +344,8 @@ static void NTM_init(void) {
                 // NTM_scheduleCpuSample();
                 // 监听续航方案命令
                 NTM_registerCommandListener();
+                // 按需采样：面板打开 Tweak 耗电 Tab 时触发，不自动定时采样
+                NTM_registerSampleListener();
             } @catch (NSException *e) {
             }
         });

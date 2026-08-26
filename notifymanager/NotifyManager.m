@@ -433,20 +433,31 @@ static NSString *NTM_dispName(NSString *appId) {
 }
 
 #pragma mark - 状态 tag 构造
-static UILabel *NTM_tag(NSString *text, UIColor *color) {
-    UILabel *l = [[UILabel alloc] init];
-    l.text = text;
-    l.font = [UIFont systemFontOfSize:10.5 weight:UIFontWeightSemibold];
-    l.textColor = color;
-    l.backgroundColor = [color colorWithAlphaComponent:0.13];
-    l.layer.cornerRadius = 7;
-    l.clipsToBounds = YES;
-    l.textAlignment = NSTextAlignmentCenter;
-    l.translatesAutoresizingMaskIntoConstraints = NO;
-    // 重要：让标签保持自身宽度，不被栈拉伸撑满整行
-    [l setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
-    [l setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
-    return l;
+// 状态药丸（纯展示，不做交互）
+static UIButton *NTM_tag(NSString *text, UIColor *color) {
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+    [b setTitle:text forState:UIControlStateNormal];
+    [b setTitleColor:color forState:UIControlStateNormal];
+    b.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    b.backgroundColor = [color colorWithAlphaComponent:0.14];
+    b.layer.cornerRadius = 14;
+    b.clipsToBounds = YES;
+    b.userInteractionEnabled = NO;
+    b.contentEdgeInsets = UIEdgeInsetsMake(5, 13, 5, 13);
+    return b;
+}
+
+// 可点击的动作药丸（关键词过滤 / 分组）
+static UIButton *NTM_actionTag(NSString *text, UIColor *color) {
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+    [b setTitle:text forState:UIControlStateNormal];
+    [b setTitleColor:color forState:UIControlStateNormal];
+    b.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    b.backgroundColor = [color colorWithAlphaComponent:0.15];
+    b.layer.cornerRadius = 14;
+    b.clipsToBounds = YES;
+    b.contentEdgeInsets = UIEdgeInsetsMake(5, 13, 5, 13);
+    return b;
 }
 
 #pragma mark - App 卡片视图
@@ -493,7 +504,7 @@ static UILabel *NTM_tag(NSString *text, UIColor *color) {
 - (UIView *)swCell:(NSString *)title sw:(UISwitch *)sw {
     UILabel *lbl = [[UILabel alloc] init];
     lbl.text = title;
-    lbl.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
+    lbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
     lbl.textColor = [UIColor colorWithWhite:0.32 alpha:1];
     lbl.textAlignment = NSTextAlignmentCenter;
     lbl.adjustsFontSizeToFitWidth = YES;
@@ -534,12 +545,12 @@ static UILabel *NTM_tag(NSString *text, UIColor *color) {
     UIButton *resetBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     [resetBtn setTitle:@"重置" forState:UIControlStateNormal];
     [resetBtn setTitleColor:[UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:1] forState:UIControlStateNormal];
-    resetBtn.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightBold];
+    resetBtn.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightBold];
     [resetBtn addTarget:self action:@selector(resetTapped) forControlEvents:UIControlEventTouchUpInside];
 
     UILabel *masterLabel = [[UILabel alloc] init];
     masterLabel.text = @"总开关";
-    masterLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+    masterLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
     masterLabel.textColor = [UIColor colorWithWhite:0.35 alpha:1];
 
     UISwitch *master = [[UISwitch alloc] init];
@@ -588,31 +599,7 @@ static UILabel *NTM_tag(NSString *text, UIColor *color) {
     featRow.alignment = UIStackViewAlignmentCenter;
     featRow.spacing = 6;
 
-    // 关键词 + 分组 行
-    UIButton *kwBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    [kwBtn setTitle:@"关键词过滤" forState:UIControlStateNormal];
-    kwBtn.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
-    kwBtn.layer.cornerRadius = 8;
-    kwBtn.backgroundColor = [UIColor colorWithRed:0.55 green:0.58 blue:0.65 alpha:0.15];
-    [kwBtn setTitleColor:[UIColor colorWithWhite:0.35 alpha:1] forState:UIControlStateNormal];
-    [kwBtn addTarget:self action:@selector(keywordTapped) forControlEvents:UIControlEventTouchUpInside];
-
-    UIButton *grpBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    [grpBtn setTitle:@"分组" forState:UIControlStateNormal];
-    grpBtn.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
-    grpBtn.layer.cornerRadius = 8;
-    grpBtn.backgroundColor = [UIColor colorWithRed:0.45 green:0.62 blue:0.98 alpha:0.15];
-    [grpBtn setTitleColor:[UIColor colorWithRed:0.20 green:0.40 blue:0.80 alpha:1] forState:UIControlStateNormal];
-    [grpBtn addTarget:self action:@selector(groupTapped) forControlEvents:UIControlEventTouchUpInside];
-
-    UIStackView *btnRow = [[UIStackView alloc] initWithArrangedSubviews:@[kwBtn, grpBtn]];
-    btnRow.axis = UILayoutConstraintAxisHorizontal;
-    btnRow.distribution = UIStackViewDistributionFillEqually;
-    btnRow.spacing = 8;
-    [kwBtn.heightAnchor constraintEqualToConstant:26].active = YES;
-    [grpBtn.heightAnchor constraintEqualToConstant:26].active = YES;
-
-    NSMutableArray *rows = [NSMutableArray arrayWithArray:@[header, _statusRow, dimRow, featRow, btnRow]];
+    NSMutableArray *rows = [NSMutableArray arrayWithArray:@[header, _statusRow, dimRow, featRow]];
     [rows addObject:[self buildNetRow]];
     UIStackView *v = [[UIStackView alloc] initWithArrangedSubviews:rows];
     v.axis = UILayoutConstraintAxisVertical;
@@ -632,7 +619,7 @@ static UILabel *NTM_tag(NSString *text, UIColor *color) {
 - (UIView *)buildNetRow {
     UILabel *netLabel = [[UILabel alloc] init];
     netLabel.text = @"网络";
-    netLabel.font = [UIFont systemFontOfSize:11];
+    netLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
     netLabel.textColor = [UIColor colorWithWhite:0.33 alpha:1];
     [netLabel.widthAnchor constraintEqualToConstant:34].active = YES;
 
@@ -640,11 +627,11 @@ static UILabel *NTM_tag(NSString *text, UIColor *color) {
     for (NSDictionary *opt in NTM_netOptions()) {
         UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
         [btn setTitle:opt[@"title"] forState:UIControlStateNormal];
-        btn.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
-        btn.layer.cornerRadius = 8;
+        btn.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+        btn.layer.cornerRadius = 10;
         btn.tag = [opt[@"policy"] integerValue];
         [btn addTarget:self action:@selector(netTapped:) forControlEvents:UIControlEventTouchUpInside];
-        [btn.heightAnchor constraintEqualToConstant:28].active = YES;
+        [btn.heightAnchor constraintEqualToConstant:34].active = YES;
         [btns addObject:btn];
         [_netButtons addObject:btn];
     }
@@ -666,56 +653,78 @@ static UILabel *NTM_tag(NSString *text, UIColor *color) {
         [_statusRow removeArrangedSubview:v];
         [v removeFromSuperview];
     }
-    // 主行：通知状态 + 网络状态
-    NSMutableArray *primary = [NSMutableArray array];
+
+    NSMutableArray *pills = [NSMutableArray array];
+
+    // 通知状态
     BOOL en = NTM_read(_appId, @"en");
     if (!en) {
-        [primary addObject:NTM_tag(@"通知关闭", [UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:1])];
+        [pills addObject:NTM_tag(@"通知关闭", [UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:1])];
     } else {
         BOOL allOn = YES;
         for (NSDictionary *d in NTM_dims()) if (!NTM_read(_appId, d[@"key"])) { allOn = NO; break; }
-        [primary addObject:NTM_tag(allOn ? @"通知全开" : @"部分开启",
-                                   allOn ? [UIColor colorWithRed:0.30 green:0.55 blue:1.0 alpha:1]
-                                         : [UIColor colorWithRed:0.95 green:0.60 blue:0.15 alpha:1])];
+        [pills addObject:NTM_tag(allOn ? @"通知全开" : @"部分开启",
+                                 allOn ? [UIColor colorWithRed:0.30 green:0.55 blue:1.0 alpha:1]
+                                       : [UIColor colorWithRed:0.95 green:0.60 blue:0.15 alpha:1])];
     }
+
+    // 网络状态
     NSInteger net = NTM_netRead(_appId);
     BOOL netOff = (net == 1);
-    [primary addObject:NTM_tag(netOff ? @"断网" : @"正常联网",
-                               netOff ? [UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:1]
-                                      : [UIColor colorWithRed:0.42 green:0.75 blue:0.50 alpha:1])];
+    [pills addObject:NTM_tag(netOff ? @"断网" : @"正常联网",
+                             netOff ? [UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:1]
+                                    : [UIColor colorWithRed:0.42 green:0.75 blue:0.50 alpha:1])];
 
-    // 副行：增强项 + 分组（有内容才显示，避免一排"—"）
+    // 关键词过滤（动作）
+    NSArray *kws = NTM_kwList(_appId);
+    NSString *kwTitle = kws.count ? [NSString stringWithFormat:@"关键词 %lu", (unsigned long)kws.count] : @"关键词过滤";
+    UIButton *kwPill = NTM_actionTag(kwTitle, [UIColor colorWithRed:0.87 green:0.35 blue:0.55 alpha:1]);
+    [kwPill addTarget:self action:@selector(keywordTapped) forControlEvents:UIControlEventTouchUpInside];
+    [pills addObject:kwPill];
+
+    // 分组（动作：已分组显示组名，未分组显示入口）
+    NSString *grp = [NTM_prefs() objectForKey:NTM_key(_appId, @"group")];
+    UIButton *grpPill = NTM_actionTag(grp.length ? grp : @"分组",
+                                      [UIColor colorWithRed:0.55 green:0.40 blue:0.90 alpha:1]);
+    [grpPill addTarget:self action:@selector(groupTapped) forControlEvents:UIControlEventTouchUpInside];
+    [pills addObject:grpPill];
+
+    // 增强功能汇总（有内容才显示）
     NSMutableArray *feats = [NSMutableArray array];
     if (NTM_feat(_appId, @"noBadge")) [feats addObject:@"仅隐角标"];
     if (NTM_feat(_appId, @"noPreview")) [feats addObject:@"隐预览"];
     if (NTM_feat(_appId, @"bgNet")) [feats addObject:@"后台断网"];
-    NSString *grp = [NTM_prefs() objectForKey:NTM_key(_appId, @"group")];
-    NSMutableArray *sub = [NSMutableArray array];
     if (feats.count) {
-        [sub addObject:NTM_tag(feats.count ? [feats componentsJoinedByString:@"+"] : @"—",
-                               [UIColor colorWithRed:0.40 green:0.45 blue:0.55 alpha:1])];
-    }
-    if (grp.length) {
-        [sub addObject:NTM_tag(grp, [UIColor colorWithRed:0.55 green:0.40 blue:0.90 alpha:1])];
+        [pills addObject:NTM_tag([feats componentsJoinedByString:@" + "],
+                                 [UIColor colorWithRed:0.40 green:0.45 blue:0.55 alpha:1])];
     }
 
-    // 组装两行
-    UIStackView *rowA = [[UIStackView alloc] initWithArrangedSubviews:primary];
-    rowA.axis = UILayoutConstraintAxisHorizontal;
-    rowA.alignment = UIStackViewAlignmentCenter;
-    rowA.spacing = 6;
-    rowA.translatesAutoresizingMaskIntoConstraints = NO;
-    [_statusRow addArrangedSubview:rowA];
-    if (sub.count) {
-        UIStackView *rowB = [[UIStackView alloc] initWithArrangedSubviews:sub];
-        rowB.axis = UILayoutConstraintAxisHorizontal;
-        rowB.alignment = UIStackViewAlignmentCenter;
-        rowB.spacing = 6;
-        rowB.translatesAutoresizingMaskIntoConstraints = NO;
-        [_statusRow addArrangedSubview:rowB];
+    // 按可用宽度自动换行铺排，避免任何一行被挤掉显示不全
+    CGFloat avail = self.bounds.size.width - 28; // v 的左右内边距 14+14
+    if (avail < 120) avail = [UIScreen mainScreen].bounds.size.width - 60; // 布局前兜底：卡片宽-内边距
+    NSMutableArray *cur = [NSMutableArray array];
+    CGFloat usedX = 0;
+    for (UIView *p in pills) {
+        CGFloat w = ceil([p intrinsicContentSize].width);
+        if (cur.count && (usedX + w > avail)) {
+            [self appendStatusRow:cur];
+            cur = [NSMutableArray array];
+            usedX = 0;
+        }
+        [cur addObject:p];
+        usedX += w + 6;
     }
-    for (UILabel *t in primary) [t.heightAnchor constraintEqualToConstant:16].active = YES;
-    for (UILabel *t in sub) [t.heightAnchor constraintEqualToConstant:16].active = YES;
+    if (cur.count) [self appendStatusRow:cur];
+}
+
+// 把一组药丸铺成一行，加入状态纵向容器
+- (void)appendStatusRow:(NSArray *)views {
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:views];
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.alignment = UIStackViewAlignmentCenter;
+    row.spacing = 6;
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    [_statusRow addArrangedSubview:row];
 }
 
 - (void)netTapped:(UIButton *)sender {

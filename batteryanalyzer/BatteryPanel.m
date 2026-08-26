@@ -7,6 +7,7 @@
 #import <dlfcn.h>
 #import <mach-o/dyld.h>
 #import <IOKit/IOKitLib.h>
+#import <notify.h>
 
 // PSViewController 是 PreferenceLoader 控制器的正确基类
 @interface PSViewController : UIViewController
@@ -32,6 +33,7 @@
 // 概览卡片 cell（电池总览：大数字 + 描述 + 迷你卡片 + 警告）
 @interface OverviewCardCell : UITableViewCell
 @property (nonatomic, strong) UIView *cardView;
+@property (nonatomic, strong) BatteryRingView *ringView; // 电量环形进度
 @property (nonatomic, strong) UILabel *levelLabel;      // 大号电量百分比
 @property (nonatomic, strong) UILabel *statusLabel;     // 充电状态
 @property (nonatomic, strong) UILabel *descLabel;       // 上次充电结束/本次消耗/历时
@@ -40,6 +42,12 @@
 @property (nonatomic, strong) UILabel *sampleValueLabel; // 采样点值
 @property (nonatomic, strong) UILabel *sampleKeyLabel;
 @property (nonatomic, strong) UILabel *warnLabel;       // 警告
+@end
+
+// 电量环形进度视图（总览卡片左侧圆环）
+@interface BatteryRingView : UIView
+@property (nonatomic) CGFloat progress;   // 0-1
+@property (nonatomic, strong) UIColor *tintColor;
 @end
 
 // 操作按钮 cell（待机漏电测试）
@@ -93,6 +101,7 @@
 // 简单键值 cell（省电&硬件 Tab）
 @interface InfoCell : UITableViewCell
 @property (nonatomic, strong) UIView *cardView;
+@property (nonatomic, strong) UIView *dotView;       // 左侧状态圆点
 @property (nonatomic, strong) UILabel *keyLabel;
 @property (nonatomic, strong) UILabel *valueLabel;
 @end
@@ -120,6 +129,42 @@
 @property (nonatomic, strong) UIView *cardView;
 @property (nonatomic, strong) UILabel *summaryLabel;
 @property (nonatomic, strong) BatteryChartView *chartView;
+@end
+
+@implementation BatteryRingView
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.backgroundColor = [UIColor clearColor];
+        self.progress = 0;
+        self.tintColor = [UIColor systemGreenColor];
+    }
+    return self;
+}
+
+- (void)drawRect:(CGRect)rect {
+    CGFloat w = self.bounds.size.width;
+    CGFloat h = self.bounds.size.height;
+    CGFloat line = 8;
+    CGFloat r = MIN(w, h) / 2 - line / 2 - 2;
+    CGPoint c = CGPointMake(w / 2, h / 2);
+    CGFloat start = -M_PI_2;
+    UIBezierPath *track = [UIBezierPath bezierPathWithArcCenter:c radius:r startAngle:start endAngle:start + M_PI * 2 clockwise:YES];
+    track.lineWidth = line;
+    track.lineCapStyle = kCGLineCapRound;
+    [[UIColor colorWithWhite:0.88 alpha:1] setStroke];
+    [track stroke];
+    if (self.progress > 0) {
+        CGFloat a = start + M_PI * 2 * MIN(MAX(self.progress, 0), 1);
+        UIBezierPath *arc = [UIBezierPath bezierPathWithArcCenter:c radius:r startAngle:start endAngle:a clockwise:YES];
+        arc.lineWidth = line;
+        arc.lineCapStyle = kCGLineCapRound;
+        [self.tintColor setStroke];
+        [arc stroke];
+    }
+}
+
 @end
 
 @implementation OverviewCardCell
@@ -179,18 +224,24 @@
         blur.userInteractionEnabled = NO;
         [_cardView addSubview:blur];
 
+        _ringView = [BatteryRingView new];
+        _ringView.translatesAutoresizingMaskIntoConstraints = NO;
+        [_cardView addSubview:_ringView];
+
         _levelLabel = [UILabel new];
         _levelLabel.translatesAutoresizingMaskIntoConstraints = NO;
-        _levelLabel.font = [UIFont systemFontOfSize:52 weight:UIFontWeightBold];
+        _levelLabel.font = [UIFont systemFontOfSize:34 weight:UIFontWeightBold];
         _levelLabel.textColor = [UIColor systemRedColor];
         _levelLabel.adjustsFontSizeToFitWidth = YES;
         _levelLabel.minimumScaleFactor = 0.5;
+        _levelLabel.textAlignment = NSTextAlignmentCenter;
         [_cardView addSubview:_levelLabel];
 
         _statusLabel = [UILabel new];
         _statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
-        _statusLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
-        _statusLabel.textColor = [UIColor colorWithWhite:0.4 alpha:1];
+        _statusLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+        _statusLabel.textColor = [UIColor colorWithWhite:0.3 alpha:1];
+        _statusLabel.numberOfLines = 1;
         [_cardView addSubview:_statusLabel];
 
         _descLabel = [UILabel new];
@@ -234,19 +285,26 @@
             [blur.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor],
             [blur.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor],
 
-            [_levelLabel.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:18],
-            [_levelLabel.topAnchor constraintEqualToAnchor:_cardView.topAnchor constant:16],
+            [_ringView.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:18],
+            [_ringView.topAnchor constraintEqualToAnchor:_cardView.topAnchor constant:14],
+            [_ringView.widthAnchor constraintEqualToConstant:92],
+            [_ringView.heightAnchor constraintEqualToConstant:92],
 
-            [_statusLabel.leadingAnchor constraintEqualToAnchor:_levelLabel.trailingAnchor constant:12],
-            [_statusLabel.lastBaselineAnchor constraintEqualToAnchor:_levelLabel.lastBaselineAnchor],
+            [_levelLabel.centerXAnchor constraintEqualToAnchor:_ringView.centerXAnchor],
+            [_levelLabel.centerYAnchor constraintEqualToAnchor:_ringView.centerYAnchor],
+            [_levelLabel.widthAnchor constraintEqualToConstant:72],
 
-            [_descLabel.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:18],
+            [_statusLabel.leadingAnchor constraintEqualToAnchor:_ringView.trailingAnchor constant:14],
+            [_statusLabel.topAnchor constraintEqualToAnchor:_ringView.topAnchor constant:14],
+            [_statusLabel.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor constant:-18],
+
+            [_descLabel.leadingAnchor constraintEqualToAnchor:_statusLabel.leadingAnchor],
             [_descLabel.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor constant:-18],
-            [_descLabel.topAnchor constraintEqualToAnchor:_levelLabel.bottomAnchor constant:6],
+            [_descLabel.topAnchor constraintEqualToAnchor:_statusLabel.bottomAnchor constant:6],
 
             [miniStack.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:16],
             [miniStack.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor constant:-16],
-            [miniStack.topAnchor constraintEqualToAnchor:_descLabel.bottomAnchor constant:12],
+            [miniStack.topAnchor constraintEqualToAnchor:_ringView.bottomAnchor constant:14],
 
             [_warnLabel.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:18],
             [_warnLabel.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor constant:-18],
@@ -413,10 +471,12 @@
         for (int i = 0; i < 4; i++) {
             UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
             [b setTitle:titles[i] forState:UIControlStateNormal];
-            b.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightRegular];
+            b.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
             b.titleLabel.adjustsFontSizeToFitWidth = YES;
             b.titleLabel.minimumScaleFactor = 0.75;
             b.titleLabel.lineBreakMode = NSLineBreakByClipping;
+            b.layer.cornerRadius = 15;
+            b.contentEdgeInsets = UIEdgeInsetsMake(4, 8, 4, 8);
             b.tag = i;
             [b addTarget:self action:@selector(tap:) forControlEvents:UIControlEventTouchUpInside];
             [stack addArrangedSubview:b];
@@ -430,8 +490,8 @@
             [NSLayoutConstraint activateConstraints:@[
                 [line.bottomAnchor constraintEqualToAnchor:b.bottomAnchor constant:-2],
                 [line.centerXAnchor constraintEqualToAnchor:b.centerXAnchor],
-                [line.widthAnchor constraintEqualToConstant:28],
-                [line.heightAnchor constraintEqualToConstant:2],
+                [line.widthAnchor constraintEqualToConstant:32],
+                [line.heightAnchor constraintEqualToConstant:2.5],
             ]];
             [_underlines addObject:line];
         }
@@ -450,8 +510,9 @@
     for (int i = 0; i < (int)_buttons.count; i++) {
         UIButton *b = _buttons[i];
         BOOL active = (i == index);
+        b.backgroundColor = active ? [UIColor colorWithRed:0.84 green:0.92 blue:1.0 alpha:1] : [UIColor clearColor];
         [b setTitleColor:active ? [UIColor systemBlueColor] : [UIColor colorWithWhite:0.45 alpha:1] forState:UIControlStateNormal];
-        b.titleLabel.font = [UIFont systemFontOfSize:13 weight:active ? UIFontWeightSemibold : UIFontWeightRegular];
+        b.titleLabel.font = [UIFont systemFontOfSize:15 weight:active ? UIFontWeightSemibold : UIFontWeightRegular];
         _underlines[i].hidden = !active;
     }
 }
@@ -605,8 +666,8 @@
         [_cardView addSubview:textStack];
 
         [NSLayoutConstraint activateConstraints:@[
-            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:5],
-            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-5],
+            [_cardView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:3],
+            [_cardView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-3],
             [_cardView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:0],
             [_cardView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:0],
 
@@ -626,8 +687,8 @@
             [_rankLabel.heightAnchor constraintEqualToConstant:16],
 
             [textStack.leadingAnchor constraintEqualToAnchor:_iconView.trailingAnchor constant:12],
-            [textStack.topAnchor constraintEqualToAnchor:_cardView.topAnchor constant:12],
-            [textStack.bottomAnchor constraintEqualToAnchor:_progressTrack.topAnchor constant:-10],
+            [textStack.topAnchor constraintEqualToAnchor:_cardView.topAnchor constant:10],
+            [textStack.bottomAnchor constraintEqualToAnchor:_progressTrack.topAnchor constant:-8],
             [textStack.trailingAnchor constraintLessThanOrEqualToAnchor:_valueLabel.leadingAnchor constant:-8],
 
             [_valueLabel.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor constant:-18],
@@ -638,7 +699,7 @@
 
             [_progressTrack.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:16],
             [_progressTrack.trailingAnchor constraintEqualToAnchor:_progressLabel.leadingAnchor constant:-6],
-            [_progressTrack.bottomAnchor constraintEqualToAnchor:_cardView.bottomAnchor constant:-14],
+            [_progressTrack.bottomAnchor constraintEqualToAnchor:_cardView.bottomAnchor constant:-12],
             [_progressTrack.heightAnchor constraintEqualToConstant:4],
 
             [_progressLabel.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor constant:-16],
@@ -797,6 +858,12 @@
         blur.userInteractionEnabled = NO;
         [_cardView addSubview:blur];
 
+        _dotView = [UIView new];
+        _dotView.translatesAutoresizingMaskIntoConstraints = NO;
+        _dotView.layer.cornerRadius = 4;
+        _dotView.backgroundColor = [UIColor systemBlueColor];
+        [_cardView addSubview:_dotView];
+
         _keyLabel = [UILabel new];
         _keyLabel.translatesAutoresizingMaskIntoConstraints = NO;
         _keyLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightRegular];
@@ -824,7 +891,12 @@
             [blur.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor],
             [blur.trailingAnchor constraintEqualToAnchor:_cardView.trailingAnchor],
 
-            [_keyLabel.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:18],
+            [_dotView.leadingAnchor constraintEqualToAnchor:_cardView.leadingAnchor constant:18],
+            [_dotView.centerYAnchor constraintEqualToAnchor:_cardView.centerYAnchor],
+            [_dotView.widthAnchor constraintEqualToConstant:8],
+            [_dotView.heightAnchor constraintEqualToConstant:8],
+
+            [_keyLabel.leadingAnchor constraintEqualToAnchor:_dotView.trailingAnchor constant:10],
             [_keyLabel.centerYAnchor constraintEqualToAnchor:_cardView.centerYAnchor],
             [_keyLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_valueLabel.leadingAnchor constant:-8],
 
@@ -850,12 +922,23 @@
         _titleLabel = [UILabel new];
         _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
         _titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
-        _titleLabel.textColor = [UIColor colorWithWhite:0.45 alpha:1];
+        _titleLabel.textColor = [UIColor colorWithWhite:0.4 alpha:1];
         [_titleLabel sizeToFit];
         [self.contentView addSubview:_titleLabel];
 
+        UIView *bar = [UIView new];
+        bar.translatesAutoresizingMaskIntoConstraints = NO;
+        bar.layer.cornerRadius = 2;
+        bar.backgroundColor = [UIColor systemBlueColor];
+        [self.contentView addSubview:bar];
+
         [NSLayoutConstraint activateConstraints:@[
-            [_titleLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:22],
+            [bar.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:14],
+            [bar.centerYAnchor constraintEqualToAnchor:_titleLabel.centerYAnchor],
+            [bar.widthAnchor constraintEqualToConstant:4],
+            [bar.heightAnchor constraintEqualToConstant:14],
+
+            [_titleLabel.leadingAnchor constraintEqualToAnchor:bar.trailingAnchor constant:8],
             [_titleLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:10],
             [_titleLabel.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-6],
         ]];
@@ -1476,38 +1559,27 @@ static NSString *NTM_tweakSize(NSString *dylibName) {
     return @"--";
 }
 
-// 切换飞行模式（SpringBoard 私有类 SBAirplaneModeController，BOOL 参数用函数指针调用）
-static BOOL NTM_setAirplaneMode(BOOL on) {
-    @try {
-        Class cls = NSClassFromString(@"SBAirplaneModeController");
-        if (!cls) return NO;
-        id ctrl = [cls performSelector:NSSelectorFromString(@"sharedInstance")];
-        if (!ctrl) return NO;
-        SEL sel = NSSelectorFromString(@"setAirplaneMode:");
-        if (![ctrl respondsToSelector:sel]) return NO;
-        void (*fn)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL))[ctrl methodForSelector:sel];
-        fn(ctrl, sel, on);
-        return YES;
-    } @catch (NSException *e) {
-        return NO;
-    }
-}
-
-// 切换低电量模式（NSProcessInfo 私有 setter / KVC，包 @try 保护）
-static BOOL NTM_setLowPower(BOOL on) {
-    @try {
-        NSProcessInfo *pi = [NSProcessInfo processInfo];
-        SEL sel = NSSelectorFromString(@"setLowPowerModeEnabled:");
-        if ([pi respondsToSelector:sel]) {
-            void (*fn)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL))[pi methodForSelector:sel];
-            fn(pi, sel, on);
-            return YES;
+// 通过 Tweak（注入 SpringBoard）执行续航方案命令并等待结果。
+// 面板运行在"设置"进程，SBAirplaneModeController 等 SpringBoard 私有类不可用，
+// 必须把命令写入 plist 并发 Darwin 通知，由 SpringBoard 内的 Tweak 执行后写回结果。
+static BOOL NTM_sendCommand(NSDictionary *cmd) {
+    NSString *plist = @"/var/mobile/Library/Preferences/com.ntm.batteryanalyzer.plist";
+    NSMutableDictionary *data = [NSMutableDictionary dictionaryWithContentsOfFile:plist];
+    if (!data) data = [NSMutableDictionary dictionary];
+    data[@"pendingCommand"] = cmd;
+    [data writeToFile:plist atomically:YES];
+    notify_post("com.ntm.battery.command");
+    for (int i = 0; i < 20; i++) {
+        usleep(100000);
+        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:plist];
+        NSDictionary *res = d[@"lastCommandResult"];
+        if ([res isKindOfClass:[NSDictionary class]] &&
+            [res[@"action"] isEqualToString:cmd[@"action"]] &&
+            [[NSDate date] timeIntervalSince1970] - [res[@"at"] doubleValue] < 3) {
+            return [res[@"ok"] boolValue];
         }
-        [pi setValue:@(on) forKey:@"lowPowerModeEnabled"];
-        return YES;
-    } @catch (NSException *e) {
-        return NO;
     }
+    return NO;
 }
 
 @implementation NTMBatteryPrincipalController
@@ -1704,9 +1776,9 @@ static BOOL NTM_setLowPower(BOOL on) {
     }
     [saver addObject:@{@"type": @"info", @"key": @"休眠阻断检测", @"value": @"无异常", @"color": @"green"}];
     [saver addObject:@{@"type": @"title", @"text": @"续航方案（一键应用）"}];
-    [saver addObject:@{@"type": @"plan", @"key": @"夜间极限待机方案", @"subtitle": @"开启飞行模式 + 低电量模式", @"action": @"应用"}];
-    [saver addObject:@{@"type": @"plan", @"key": @"日常均衡续航方案", @"subtitle": @"低电量模式 + 亮度 50%", @"action": @"应用"}];
-    [saver addObject:@{@"type": @"plan", @"key": @"恢复默认设置", @"subtitle": @"关闭飞行模式/低电量，恢复亮度", @"action": @"恢复"}];
+    [saver addObject:@{@"type": @"plan", @"key": @"夜间极限待机方案", @"subtitle": @"🌙 开启飞行模式 + 低电量模式", @"action": @"应用"}];
+    [saver addObject:@{@"type": @"plan", @"key": @"日常均衡续航方案", @"subtitle": @"⚡ 低电量模式 + 亮度 50%", @"action": @"应用"}];
+    [saver addObject:@{@"type": @"plan", @"key": @"恢复默认设置", @"subtitle": @"🔄 关闭飞行模式/低电量，恢复亮度", @"action": @"恢复"}];
     _saverRows = saver;
 
     // 硬件&充电 行数据
@@ -1774,14 +1846,19 @@ static BOOL NTM_setLowPower(BOOL on) {
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
-    if (section != 5) return nil;
+    NSString *title = nil;
+    if (section == 0) title = @"🔋 电池总览";
+    else if (section == 1) title = @"🧪 待机漏电测试";
+    else if (section == 2) title = @"🔍 智能诊断";
+    else if (section == 5) title = @"📈 电量24小时趋势";
+    if (!title) return nil;
     UIView *v = [UIView new];
     v.backgroundColor = [UIColor clearColor];
     UILabel *label = [UILabel new];
     label.translatesAutoresizingMaskIntoConstraints = NO;
-    label.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
-    label.textColor = [UIColor colorWithWhite:0.4 alpha:1];
-    label.text = @"电量24小时趋势";
+    label.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+    label.textColor = [UIColor colorWithWhite:0.35 alpha:1];
+    label.text = title;
     [v addSubview:label];
     [NSLayoutConstraint activateConstraints:@[
         [label.leadingAnchor constraintEqualToAnchor:v.leadingAnchor constant:22],
@@ -1791,12 +1868,12 @@ static BOOL NTM_setLowPower(BOOL on) {
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
-    if (section == 5) return 30;
+    if (section == 0 || section == 1 || section == 2 || section == 5) return 28;
     return 0;
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
-    return 8;
+    return 4;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -2050,20 +2127,36 @@ static BOOL NTM_setLowPower(BOOL on) {
     cell.keyLabel.text = row[@"key"];
     cell.valueLabel.text = row[@"value"];
     NSString *color = row[@"color"];
-    if ([color isEqualToString:@"orange"]) cell.valueLabel.textColor = [UIColor systemOrangeColor];
-    else if ([color isEqualToString:@"green"]) cell.valueLabel.textColor = [UIColor systemGreenColor];
-    else if ([color isEqualToString:@"red"]) cell.valueLabel.textColor = [UIColor systemRedColor];
-    else cell.valueLabel.textColor = [UIColor colorWithWhite:0.15 alpha:1];
+    if ([color isEqualToString:@"orange"]) {
+        cell.valueLabel.textColor = [UIColor systemOrangeColor];
+        cell.dotView.backgroundColor = [UIColor systemOrangeColor];
+    } else if ([color isEqualToString:@"green"]) {
+        cell.valueLabel.textColor = [UIColor systemGreenColor];
+        cell.dotView.backgroundColor = [UIColor systemGreenColor];
+    } else if ([color isEqualToString:@"red"]) {
+        cell.valueLabel.textColor = [UIColor systemRedColor];
+        cell.dotView.backgroundColor = [UIColor systemRedColor];
+    } else {
+        cell.valueLabel.textColor = [UIColor colorWithWhite:0.15 alpha:1];
+        cell.dotView.backgroundColor = [UIColor systemBlueColor];
+    }
 }
 
 - (void)configOverviewCell:(OverviewCardCell *)cell {
     if (_currentLevel >= 0) {
         cell.levelLabel.text = [NSString stringWithFormat:@"%ld%%", (long)_currentLevel];
         cell.levelLabel.textColor = _charging ? [UIColor systemGreenColor] : [UIColor systemRedColor];
+        cell.ringView.progress = _currentLevel / 100.0;
+        if (_currentLevel > 50) cell.ringView.tintColor = [UIColor systemGreenColor];
+        else if (_currentLevel > 20) cell.ringView.tintColor = [UIColor systemOrangeColor];
+        else cell.ringView.tintColor = [UIColor systemRedColor];
     } else {
         cell.levelLabel.text = @"--";
         cell.levelLabel.textColor = [UIColor colorWithWhite:0.4 alpha:1];
+        cell.ringView.progress = 0;
+        cell.ringView.tintColor = [UIColor systemGrayColor];
     }
+    [cell.ringView setNeedsDisplay];
     cell.statusLabel.text = @"未充电";
     if (_batteryState == UIDeviceBatteryStateFull) {
         cell.statusLabel.text = @"已充满";
@@ -2168,16 +2261,25 @@ static BOOL NTM_setLowPower(BOOL on) {
     }
     if (indexPath.section == 4 && _selectedTab == 0) {
         if (!_appList.count) return;
-        if (indexPath.row >= (NSInteger)_appList.count) {
-            _expandedRow = -1;
-        } else if (_expandedRow == indexPath.row) {
-            _expandedRow = -1;
-        } else {
-            _expandedRow = indexPath.row;
+        NSInteger oldExpanded = _expandedRow;
+        NSInteger newExpanded = -1;
+        if (indexPath.row < (NSInteger)_appList.count) {
+            newExpanded = (_expandedRow == indexPath.row) ? -1 : indexPath.row;
         }
-        [tableView reloadSections:[NSIndexSet indexSetWithIndex:4] withRowAnimation:UITableViewRowAnimationFade];
-        if (_expandedRow >= 0) {
-            [tableView scrollToRowAtIndexPath:[NSIndexPath indexPathForRow:_expandedRow + 1 inSection:4] atScrollPosition:UITableViewScrollPositionNone animated:YES];
+        _expandedRow = newExpanded;
+        [tableView beginUpdates];
+        if (oldExpanded >= 0) {
+            [tableView deleteRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:oldExpanded + 1 inSection:4]] withRowAnimation:UITableViewRowAnimationFade];
+        }
+        if (newExpanded >= 0) {
+            [tableView insertRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:newExpanded + 1 inSection:4]] withRowAnimation:UITableViewRowAnimationFade];
+        }
+        [tableView endUpdates];
+        if (newExpanded >= 0) {
+            NSIndexPath *target = [NSIndexPath indexPathForRow:newExpanded + 1 inSection:4];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [tableView scrollToRowAtIndexPath:target atScrollPosition:UITableViewScrollPositionNone animated:YES];
+            });
         }
         return;
     }
@@ -2189,7 +2291,7 @@ static BOOL NTM_setLowPower(BOOL on) {
     }
 }
 
-// 一键应用续航方案（飞行模式/低电量模式/屏幕亮度，全部私有 API 包 @try 保护）
+// 一键应用续航方案：飞行模式/低电量由 Tweak 在 SpringBoard 内执行，亮度直接设置
 - (void)applyPlan:(NSString *)key {
     if ([key isEqualToString:@"夜间极限待机方案"]) {
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"夜间极限待机方案"
@@ -2197,10 +2299,15 @@ static BOOL NTM_setLowPower(BOOL on) {
             preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
         [alert addAction:[UIAlertAction actionWithTitle:@"应用" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-            BOOL ok1 = NTM_setAirplaneMode(YES);
-            BOOL ok2 = NTM_setLowPower(YES);
-            [self showTip:@"已应用" msg:[NSString stringWithFormat:@"飞行模式：%@\n低电量模式：%@",
-                ok1 ? @"已开启" : @"开启失败", ok2 ? @"已开启" : @"开启失败"]];
+            [self showTip:@"正在应用…" msg:@"正在开启飞行模式与低电量模式，请稍候…"];
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                BOOL ok1 = NTM_sendCommand(@{@"action": @"airplane", @"on": @YES});
+                BOOL ok2 = NTM_sendCommand(@{@"action": @"lowpower", @"on": @YES});
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self showTip:@"已应用" msg:[NSString stringWithFormat:@"飞行模式：%@\n低电量模式：%@",
+                        ok1 ? @"已开启" : @"开启失败", ok2 ? @"已开启" : @"开启失败"]];
+                });
+            });
         }]];
         [self presentViewController:alert animated:YES completion:nil];
     } else if ([key isEqualToString:@"日常均衡续航方案"]) {
@@ -2209,10 +2316,15 @@ static BOOL NTM_setLowPower(BOOL on) {
             preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
         [alert addAction:[UIAlertAction actionWithTitle:@"应用" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-            BOOL ok = NTM_setLowPower(YES);
-            [UIScreen mainScreen].brightness = 0.5;
-            [self showTip:@"已应用" msg:[NSString stringWithFormat:@"低电量模式：%@\n屏幕亮度：已调至 50%%",
-                ok ? @"已开启" : @"开启失败"]];
+            [self showTip:@"正在应用…" msg:@"正在开启低电量模式并调整亮度，请稍候…"];
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                BOOL ok = NTM_sendCommand(@{@"action": @"lowpower", @"on": @YES});
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [UIScreen mainScreen].brightness = 0.5;
+                    [self showTip:@"已应用" msg:[NSString stringWithFormat:@"低电量模式：%@\n屏幕亮度：已调至 50%%",
+                        ok ? @"已开启" : @"开启失败"]];
+                });
+            });
         }]];
         [self presentViewController:alert animated:YES completion:nil];
     } else if ([key isEqualToString:@"恢复默认设置"]) {
@@ -2221,11 +2333,16 @@ static BOOL NTM_setLowPower(BOOL on) {
             preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
         [alert addAction:[UIAlertAction actionWithTitle:@"恢复" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-            BOOL ok1 = NTM_setAirplaneMode(NO);
-            BOOL ok2 = NTM_setLowPower(NO);
-            [UIScreen mainScreen].brightness = 0.8;
-            [self showTip:@"已恢复" msg:[NSString stringWithFormat:@"飞行模式：%@\n低电量模式：%@\n屏幕亮度：已恢复 80%%",
-                ok1 ? @"已关闭" : @"关闭失败", ok2 ? @"已关闭" : @"关闭失败"]];
+            [self showTip:@"正在恢复…" msg:@"正在关闭飞行模式与低电量模式，请稍候…"];
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                BOOL ok1 = NTM_sendCommand(@{@"action": @"airplane", @"on": @NO});
+                BOOL ok2 = NTM_sendCommand(@{@"action": @"lowpower", @"on": @NO});
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [UIScreen mainScreen].brightness = 0.8;
+                    [self showTip:@"已恢复" msg:[NSString stringWithFormat:@"飞行模式：%@\n低电量模式：%@\n屏幕亮度：已恢复 80%%",
+                        ok1 ? @"已关闭" : @"关闭失败", ok2 ? @"已关闭" : @"关闭失败"]];
+                });
+            });
         }]];
         [self presentViewController:alert animated:YES completion:nil];
     }

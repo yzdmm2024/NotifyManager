@@ -26,29 +26,32 @@ static void NTM_save(NSDictionary *d) {
 
 // 获取当前前台 App 的 bundle id（主屏幕/锁屏返回 nil）
 static NSString *NTM_frontmostApp(void) {
-    // 方法1：遍历 SBApplicationController 所有 App，找 isFrontmost == YES
-    Class cls = NSClassFromString(@"SBApplicationController");
-    if (cls) {
-        id ctrl = [cls performSelector:@selector(sharedInstance)];
-        if (ctrl && [ctrl respondsToSelector:@selector(applications)]) {
-            NSArray *apps = [ctrl performSelector:@selector(applications)];
-            SEL frontSel = NSSelectorFromString(@"isFrontmost");
-            for (id app in apps) {
-                if (![app respondsToSelector:frontSel]) continue;
-                BOOL front = ((BOOL (*)(id, SEL))objc_msgSend)(app, frontSel);
-                if (front) {
-                    NSString *bid = [app valueForKey:@"bundleIdentifier"];
-                    if ([bid isKindOfClass:[NSString class]] && bid.length) return bid;
+    @try {
+        // 方法1：遍历 SBApplicationController 所有 App，找 isFrontmost == YES
+        Class cls = NSClassFromString(@"SBApplicationController");
+        if (cls) {
+            id ctrl = [cls performSelector:@selector(sharedInstance)];
+            if (ctrl && [ctrl respondsToSelector:@selector(applications)]) {
+                NSArray *apps = [ctrl performSelector:@selector(applications)];
+                SEL frontSel = NSSelectorFromString(@"isFrontmost");
+                for (id app in apps) {
+                    if (![app respondsToSelector:frontSel]) continue;
+                    BOOL front = ((BOOL (*)(id, SEL))objc_msgSend)(app, frontSel);
+                    if (front) {
+                        NSString *bid = [app valueForKey:@"bundleIdentifier"];
+                        if ([bid isKindOfClass:[NSString class]] && bid.length) return bid;
+                    }
                 }
             }
         }
-    }
-    // 方法2：UIApplication 私有接口直接取前台 App
-    id frontApp = [[UIApplication sharedApplication] performSelector:@selector(_accessibilityFrontMostApplication)];
-    if (frontApp) {
-        NSString *bid = [frontApp valueForKey:@"bundleIdentifier"];
-        if ([bid isKindOfClass:[NSString class]] && bid.length &&
-            ![bid isEqualToString:@"com.apple.springboard"]) return bid;
+        // 方法2：UIApplication 私有接口直接取前台 App
+        id frontApp = [[UIApplication sharedApplication] performSelector:@selector(_accessibilityFrontMostApplication)];
+        if (frontApp) {
+            NSString *bid = [frontApp valueForKey:@"bundleIdentifier"];
+            if ([bid isKindOfClass:[NSString class]] && bid.length &&
+                ![bid isEqualToString:@"com.apple.springboard"]) return bid;
+        }
+    } @catch (NSException *e) {
     }
     return nil;
 }
@@ -77,6 +80,7 @@ static BOOL NTM_commandIsFresh(NSDictionary *cmd) {
 }
 
 static void NTM_tick(void) {
+    @try {
     NSMutableDictionary *data = NTM_load();
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     NSTimeInterval dt = (g_lastTick > 0) ? (now - g_lastTick) : 5.0;
@@ -140,6 +144,8 @@ static void NTM_tick(void) {
 
     NTM_pruneApps(data);
     NTM_save(data);
+    } @catch (NSException *e) {
+    }
 }
 
 // 限制 app 数量：只保留使用量（前台+后台）最大的前 15 个，防止数据无限增长
@@ -185,7 +191,7 @@ static NSDictionary *NTM_sampleTweakCpu(void) {
     mach_msg_type_number_t threadCount = 0;
     if (task_threads(mach_task_self(), &threads, &threadCount) != KERN_SUCCESS) return nil;
     @try {
-        for (int round = 0; round < 8; round++) {
+        for (int round = 0; round < 4; round++) {
             for (mach_msg_type_number_t i = 0; i < threadCount; i++) {
                 // 线程实时 CPU 使用率（cpu_usage 单位：百分之一百分比，100 = 1%）
                 thread_basic_info_t basic;
@@ -194,12 +200,13 @@ static NSDictionary *NTM_sampleTweakCpu(void) {
                 if (thread_info(threads[i], THREAD_BASIC_INFO, (thread_info_t)&basic, &bc) == KERN_SUCCESS) {
                     cpu = basic->cpu_usage / 100.0;
                 }
-                // 通过 PC 归属到具体 dylib（arm64/arm64e 布局一致：__x[29](232B)+fp+lr+sp 后即 PC，offset 256）
+                // 通过 PC 归属到具体 dylib：直接用 state.__pc 字段（编译器保证正确布局），
+                // 避免硬编码偏移量导致读到垃圾地址引发 dladdr 段错误（段错误无法被 @try 捕获）
                 arm_thread_state64_t state;
                 mach_msg_type_number_t sc = ARM_THREAD_STATE64_COUNT;
                 uint64_t pc = 0;
                 if (thread_get_state(threads[i], ARM_THREAD_STATE64, (thread_state_t)&state, &sc) == KERN_SUCCESS) {
-                    pc = *(uint64_t *)((uint8_t *)&state + 256);
+                    pc = state.__pc;
                 }
                 if (pc) {
                     Dl_info info;
@@ -226,14 +233,17 @@ static NSDictionary *NTM_sampleTweakCpu(void) {
 
 static dispatch_queue_t g_cpuQueue = nil;
 
-// 每 20 秒后台采样一次 Tweak CPU，写入 plist 供设置面板读取（首次 15 秒后开始，避开 SpringBoard 启动繁忙期）
+// 每 60 秒后台采样一次 Tweak CPU，写入 plist 供设置面板读取（首次 60 秒后开始，避开 SpringBoard 启动繁忙期）
 static void NTM_scheduleCpuSample(void) {
     if (!g_cpuQueue) g_cpuQueue = dispatch_queue_create("com.ntm.battery.cpu", DISPATCH_QUEUE_SERIAL);
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_SEC)), g_cpuQueue, ^{
-        NSMutableDictionary *data = NTM_load();
-        data[@"tweakCpu"] = NTM_sampleTweakCpu();
-        data[@"tweakCpuAt"] = @([[NSDate date] timeIntervalSince1970]);
-        NTM_save(data);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(60 * NSEC_PER_SEC)), g_cpuQueue, ^{
+        @try {
+            NSMutableDictionary *data = NTM_load();
+            data[@"tweakCpu"] = NTM_sampleTweakCpu();
+            data[@"tweakCpuAt"] = @([[NSDate date] timeIntervalSince1970]);
+            NTM_save(data);
+        } @catch (NSException *e) {
+        }
         NTM_scheduleCpuSample();
     });
 }
@@ -300,19 +310,25 @@ static void NTM_registerCommandListener(void) {
 
 __attribute__((constructor))
 static void NTM_init(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        g_timer = [NSTimer timerWithTimeInterval:5.0 repeats:YES block:^(NSTimer *t) {
-            NTM_tick();
-        }];
-        [[NSRunLoop mainRunLoop] addTimer:g_timer forMode:NSRunLoopCommonModes];
-        NTM_tick();
-        // 记录已注入的 Tweak 列表（面板 Tab1 展示）
-        NSMutableDictionary *data = NTM_load();
-        data[@"tweaks"] = NTM_loadedTweaks();
-        NTM_save(data);
-        // 后台采样 Tweak CPU（首次 15 秒后，每 20 秒一次）
-        NTM_scheduleCpuSample();
-        // 监听续航方案命令
-        NTM_registerCommandListener();
-    });
+    @try {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            @try {
+                g_timer = [NSTimer timerWithTimeInterval:5.0 repeats:YES block:^(NSTimer *t) {
+                    NTM_tick();
+                }];
+                [[NSRunLoop mainRunLoop] addTimer:g_timer forMode:NSRunLoopCommonModes];
+                NTM_tick();
+                // 记录已注入的 Tweak 列表（面板 Tab1 展示）
+                NSMutableDictionary *data = NTM_load();
+                data[@"tweaks"] = NTM_loadedTweaks();
+                NTM_save(data);
+                // 后台采样 Tweak CPU（首次 60 秒后，每 60 秒一次）
+                NTM_scheduleCpuSample();
+                // 监听续航方案命令
+                NTM_registerCommandListener();
+            } @catch (NSException *e) {
+            }
+        });
+    } @catch (NSException *e) {
+    }
 }

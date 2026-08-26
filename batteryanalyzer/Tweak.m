@@ -8,6 +8,7 @@
 #import <mach/mach.h>
 #import <dlfcn.h>
 #import <unistd.h>
+#import <notify.h>
 
 static NSString *NTM_plistPath(void) {
     return @"/var/mobile/Library/Preferences/com.ntm.batteryanalyzer.plist";
@@ -211,6 +212,54 @@ static void NTM_scheduleCpuSample(void) {
     });
 }
 
+// 执行设置面板发来的续航方案命令（本 Tweak 运行在 SpringBoard 内，私有类可用）
+static void NTM_executeCommand(NSDictionary *cmd) {
+    NSString *action = cmd[@"action"];
+    BOOL on = [cmd[@"on"] boolValue];
+    BOOL ok = NO;
+    @try {
+        if ([action isEqualToString:@"airplane"]) {
+            Class cls = NSClassFromString(@"SBAirplaneModeController");
+            id ctrl = cls ? [cls performSelector:NSSelectorFromString(@"sharedInstance")] : nil;
+            if (ctrl) {
+                SEL sel = NSSelectorFromString(@"setAirplaneMode:");
+                if ([ctrl respondsToSelector:sel]) {
+                    void (*fn)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL))[ctrl methodForSelector:sel];
+                    fn(ctrl, sel, on);
+                    ok = YES;
+                }
+            }
+        } else if ([action isEqualToString:@"lowpower"]) {
+            NSProcessInfo *pi = [NSProcessInfo processInfo];
+            SEL sel = NSSelectorFromString(@"setLowPowerModeEnabled:");
+            if ([pi respondsToSelector:sel]) {
+                void (*fn)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL))[pi methodForSelector:sel];
+                fn(pi, sel, on);
+                ok = YES;
+            }
+        }
+    } @catch (NSException *e) {
+        ok = NO;
+    }
+    NSMutableDictionary *data = NTM_load();
+    data[@"lastCommandResult"] = @{@"action": action ?: @"", @"ok": @(ok), @"at": @([[NSDate date] timeIntervalSince1970])};
+    [data removeObjectForKey:@"pendingCommand"];
+    NTM_save(data);
+}
+
+static int g_cmdToken = 0;
+
+// 监听设置面板的 Darwin 通知，读取 pendingCommand 并执行
+static void NTM_registerCommandListener(void) {
+    notify_register_dispatch("com.ntm.battery.command", &g_cmdToken, dispatch_get_main_queue(), ^(int token) {
+        NSMutableDictionary *data = NTM_load();
+        NSDictionary *cmd = data[@"pendingCommand"];
+        if ([cmd isKindOfClass:[NSDictionary class]]) {
+            NTM_executeCommand(cmd);
+        }
+    });
+}
+
 __attribute__((constructor))
 static void NTM_init(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -225,5 +274,7 @@ static void NTM_init(void) {
         NTM_save(data);
         // 后台采样 Tweak CPU（每 15 秒）
         NTM_scheduleCpuSample();
+        // 监听续航方案命令
+        NTM_registerCommandListener();
     });
 }

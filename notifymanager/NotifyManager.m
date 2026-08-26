@@ -436,13 +436,16 @@ static NSString *NTM_dispName(NSString *appId) {
 static UILabel *NTM_tag(NSString *text, UIColor *color) {
     UILabel *l = [[UILabel alloc] init];
     l.text = text;
-    l.font = [UIFont systemFontOfSize:10 weight:UIFontWeightSemibold];
+    l.font = [UIFont systemFontOfSize:10.5 weight:UIFontWeightSemibold];
     l.textColor = color;
     l.backgroundColor = [color colorWithAlphaComponent:0.13];
     l.layer.cornerRadius = 7;
     l.clipsToBounds = YES;
     l.textAlignment = NSTextAlignmentCenter;
     l.translatesAutoresizingMaskIntoConstraints = NO;
+    // 重要：让标签保持自身宽度，不被栈拉伸撑满整行
+    [l setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [l setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
     return l;
 }
 
@@ -486,18 +489,20 @@ static UILabel *NTM_tag(NSString *text, UIColor *color) {
     return self;
 }
 
-// 构造一个 "标签+开关" 的竖向单元
+// 构造一个 "标签+开关" 的竖向单元（行内均分宽度，开关列自动对齐）
 - (UIView *)swCell:(NSString *)title sw:(UISwitch *)sw {
     UILabel *lbl = [[UILabel alloc] init];
     lbl.text = title;
-    lbl.font = [UIFont systemFontOfSize:10];
-    lbl.textColor = [UIColor colorWithWhite:0.33 alpha:1];
+    lbl.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
+    lbl.textColor = [UIColor colorWithWhite:0.32 alpha:1];
     lbl.textAlignment = NSTextAlignmentCenter;
-    sw.transform = CGAffineTransformMakeScale(0.72, 0.72);
+    lbl.adjustsFontSizeToFitWidth = YES;
+    lbl.minimumScaleFactor = 0.8;
+    sw.transform = CGAffineTransformMakeScale(0.68, 0.68);
     UIStackView *item = [[UIStackView alloc] initWithArrangedSubviews:@[lbl, sw]];
     item.axis = UILayoutConstraintAxisVertical;
     item.alignment = UIStackViewAlignmentCenter;
-    item.spacing = 2;
+    item.spacing = 3;
     return item;
 }
 
@@ -546,11 +551,11 @@ static UILabel *NTM_tag(NSString *text, UIColor *color) {
     header.alignment = UIStackViewAlignmentCenter;
     header.spacing = 10;
 
-    // 状态标签行
+    // 状态标签行（纵向容器，内分两行铺标签，避免一行塞不下溢出）
     _statusRow = [[UIStackView alloc] init];
-    _statusRow.axis = UILayoutConstraintAxisHorizontal;
-    _statusRow.alignment = UIStackViewAlignmentCenter;
-    _statusRow.spacing = 6;
+    _statusRow.axis = UILayoutConstraintAxisVertical;
+    _statusRow.alignment = UIStackViewAlignmentLeading;
+    _statusRow.spacing = 4;
 
     // 子开关行：5 个维度横排
     NSMutableArray *dimItems = [NSMutableArray array];
@@ -581,7 +586,7 @@ static UILabel *NTM_tag(NSString *text, UIColor *color) {
     featRow.axis = UILayoutConstraintAxisHorizontal;
     featRow.distribution = UIStackViewDistributionFillEqually;
     featRow.alignment = UIStackViewAlignmentCenter;
-    featRow.spacing = 4;
+    featRow.spacing = 6;
 
     // 关键词 + 分组 行
     UIButton *kwBtn = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -661,33 +666,56 @@ static UILabel *NTM_tag(NSString *text, UIColor *color) {
         [_statusRow removeArrangedSubview:v];
         [v removeFromSuperview];
     }
-    NSMutableArray *tags = [NSMutableArray array];
+    // 主行：通知状态 + 网络状态
+    NSMutableArray *primary = [NSMutableArray array];
     BOOL en = NTM_read(_appId, @"en");
     if (!en) {
-        [tags addObject:NTM_tag(@"通知关闭", [UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:1])];
+        [primary addObject:NTM_tag(@"通知关闭", [UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:1])];
     } else {
         BOOL allOn = YES;
         for (NSDictionary *d in NTM_dims()) if (!NTM_read(_appId, d[@"key"])) { allOn = NO; break; }
-        [tags addObject:NTM_tag(allOn ? @"通知全开" : @"部分开启",
-                                 allOn ? [UIColor colorWithRed:0.30 green:0.55 blue:1.0 alpha:1]
-                                       : [UIColor colorWithRed:0.95 green:0.60 blue:0.15 alpha:1])];
+        [primary addObject:NTM_tag(allOn ? @"通知全开" : @"部分开启",
+                                   allOn ? [UIColor colorWithRed:0.30 green:0.55 blue:1.0 alpha:1]
+                                         : [UIColor colorWithRed:0.95 green:0.60 blue:0.15 alpha:1])];
     }
     NSInteger net = NTM_netRead(_appId);
     BOOL netOff = (net == 1);
-    [tags addObject:NTM_tag(netOff ? @"断网" : @"正常联网",
-                            netOff ? [UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:1]
-                                   : [UIColor colorWithRed:0.42 green:0.75 blue:0.50 alpha:1])];
+    [primary addObject:NTM_tag(netOff ? @"断网" : @"正常联网",
+                               netOff ? [UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:1]
+                                      : [UIColor colorWithRed:0.42 green:0.75 blue:0.50 alpha:1])];
+
+    // 副行：增强项 + 分组（有内容才显示，避免一排"—"）
     NSMutableArray *feats = [NSMutableArray array];
     if (NTM_feat(_appId, @"noBadge")) [feats addObject:@"仅隐角标"];
     if (NTM_feat(_appId, @"noPreview")) [feats addObject:@"隐预览"];
     if (NTM_feat(_appId, @"bgNet")) [feats addObject:@"后台断网"];
-    [tags addObject:NTM_tag(feats.count ? [feats componentsJoinedByString:@"+"] : @"—",
-                            [UIColor colorWithRed:0.40 green:0.45 blue:0.55 alpha:1])];
     NSString *grp = [NTM_prefs() objectForKey:NTM_key(_appId, @"group")];
-    [tags addObject:NTM_tag(grp.length ? grp : @"—",
-                            [UIColor colorWithRed:0.55 green:0.40 blue:0.90 alpha:1])];
-    for (UILabel *t in tags) [t.heightAnchor constraintEqualToConstant:16].active = YES;
-    for (UILabel *t in tags) [_statusRow addArrangedSubview:t];
+    NSMutableArray *sub = [NSMutableArray array];
+    if (feats.count) {
+        [sub addObject:NTM_tag(feats.count ? [feats componentsJoinedByString:@"+"] : @"—",
+                               [UIColor colorWithRed:0.40 green:0.45 blue:0.55 alpha:1])];
+    }
+    if (grp.length) {
+        [sub addObject:NTM_tag(grp, [UIColor colorWithRed:0.55 green:0.40 blue:0.90 alpha:1])];
+    }
+
+    // 组装两行
+    UIStackView *rowA = [[UIStackView alloc] initWithArrangedSubviews:primary];
+    rowA.axis = UILayoutConstraintAxisHorizontal;
+    rowA.alignment = UIStackViewAlignmentCenter;
+    rowA.spacing = 6;
+    rowA.translatesAutoresizingMaskIntoConstraints = NO;
+    [_statusRow addArrangedSubview:rowA];
+    if (sub.count) {
+        UIStackView *rowB = [[UIStackView alloc] initWithArrangedSubviews:sub];
+        rowB.axis = UILayoutConstraintAxisHorizontal;
+        rowB.alignment = UIStackViewAlignmentCenter;
+        rowB.spacing = 6;
+        rowB.translatesAutoresizingMaskIntoConstraints = NO;
+        [_statusRow addArrangedSubview:rowB];
+    }
+    for (UILabel *t in primary) [t.heightAnchor constraintEqualToConstant:16].active = YES;
+    for (UILabel *t in sub) [t.heightAnchor constraintEqualToConstant:16].active = YES;
 }
 
 - (void)netTapped:(UIButton *)sender {

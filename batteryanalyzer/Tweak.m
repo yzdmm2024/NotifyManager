@@ -318,13 +318,14 @@ static void NTM_init(void) {
                     NTM_tick();
                 }];
                 [[NSRunLoop mainRunLoop] addTimer:g_timer forMode:NSRunLoopCommonModes];
-                NTM_tick();
+                // 不立即执行 NTM_tick：等第一个 5 秒后 timer 触发，避开 SpringBoard 启动繁忙期，
+                // 避免启动早期遍历 App 列表（objc_msgSend）触发段错误导致安全模式
                 // 记录已注入的 Tweak 列表（面板 Tab1 展示）
                 NSMutableDictionary *data = NTM_load();
                 data[@"tweaks"] = NTM_loadedTweaks();
                 NTM_save(data);
-                // 后台采样 Tweak CPU（首次 60 秒后，每 60 秒一次）
-                NTM_scheduleCpuSample();
+                // 自动 CPU 采样已禁用（高风险段错误源，先保证稳定）
+                // NTM_scheduleCpuSample();
                 // 监听续航方案命令
                 NTM_registerCommandListener();
             } @catch (NSException *e) {

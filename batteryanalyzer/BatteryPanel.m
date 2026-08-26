@@ -1813,10 +1813,6 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
         [saver addObject:@{@"type": @"info", @"key": @"后台刷新 App 过多", @"value": @"正常", @"color": @"green"}];
     }
     [saver addObject:@{@"type": @"info", @"key": @"休眠阻断检测", @"value": @"无异常", @"color": @"green"}];
-    [saver addObject:@{@"type": @"title", @"text": @"续航方案（一键应用）"}];
-    [saver addObject:@{@"type": @"plan", @"key": @"夜间极限待机方案", @"subtitle": @"🌙 开启飞行模式 + 低电量模式", @"action": @"应用"}];
-    [saver addObject:@{@"type": @"plan", @"key": @"日常均衡续航方案", @"subtitle": @"⚡ 低电量模式 + 亮度 50%", @"action": @"应用"}];
-    [saver addObject:@{@"type": @"plan", @"key": @"恢复默认设置", @"subtitle": @"🔄 关闭飞行模式/低电量，恢复亮度", @"action": @"恢复"}];
     _saverRows = saver;
 
     // 硬件&充电 行数据
@@ -1945,6 +1941,7 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    @try {
     switch (indexPath.section) {
         case 0: {
             OverviewCardCell *cell = [tableView dequeueReusableCellWithIdentifier:@"overview"];
@@ -1989,6 +1986,9 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
         }
     }
     return [UITableViewCell new];
+    } @catch (NSException *e) {
+        return [UITableViewCell new];
+    }
 }
 
 // Tab 内容 cell
@@ -2335,26 +2335,13 @@ static BOOL NTM_sendCommand(NSDictionary *cmd) {
     }
     if (indexPath.section == 4 && _selectedTab == 0) {
         if (!_appList.count) return;
-        NSInteger oldExpanded = _expandedRow;
         NSInteger newExpanded = -1;
         if (indexPath.row < (NSInteger)_appList.count) {
             newExpanded = (_expandedRow == indexPath.row) ? -1 : indexPath.row;
         }
         _expandedRow = newExpanded;
-        [tableView beginUpdates];
-        if (oldExpanded >= 0) {
-            [tableView deleteRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:oldExpanded + 1 inSection:4]] withRowAnimation:UITableViewRowAnimationFade];
-        }
-        if (newExpanded >= 0) {
-            [tableView insertRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:newExpanded + 1 inSection:4]] withRowAnimation:UITableViewRowAnimationFade];
-        }
-        [tableView endUpdates];
-        if (newExpanded >= 0) {
-            NSIndexPath *target = [NSIndexPath indexPathForRow:newExpanded + 1 inSection:4];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [tableView scrollToRowAtIndexPath:target atScrollPosition:UITableViewScrollPositionNone animated:YES];
-            });
-        }
+        // 直接整体刷新，避免 insertRows/deleteRows 行数不一致导致 NSInternalInconsistencyException 闪退
+        [tableView reloadData];
         return;
     }
     if (indexPath.section == 4 && _selectedTab == 2) {

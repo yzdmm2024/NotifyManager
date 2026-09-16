@@ -439,12 +439,12 @@ static UIButton *NTM_tag(NSString *text, UIColor *color) {
     UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
     [b setTitle:text forState:UIControlStateNormal];
     [b setTitleColor:color forState:UIControlStateNormal];
-    b.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    b.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
     b.backgroundColor = [color colorWithAlphaComponent:0.14];
-    b.layer.cornerRadius = 14;
+    b.layer.cornerRadius = 12;
     b.clipsToBounds = YES;
     b.userInteractionEnabled = NO;
-    b.contentEdgeInsets = UIEdgeInsetsMake(5, 13, 5, 13);
+    b.contentEdgeInsets = UIEdgeInsetsMake(4, 10, 4, 10);
     return b;
 }
 
@@ -453,11 +453,11 @@ static UIButton *NTM_actionTag(NSString *text, UIColor *color) {
     UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
     [b setTitle:text forState:UIControlStateNormal];
     [b setTitleColor:color forState:UIControlStateNormal];
-    b.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    b.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
     b.backgroundColor = [color colorWithAlphaComponent:0.15];
-    b.layer.cornerRadius = 14;
+    b.layer.cornerRadius = 12;
     b.clipsToBounds = YES;
-    b.contentEdgeInsets = UIEdgeInsetsMake(5, 13, 5, 13);
+    b.contentEdgeInsets = UIEdgeInsetsMake(4, 10, 4, 10);
     return b;
 }
 
@@ -505,16 +505,16 @@ static UIButton *NTM_actionTag(NSString *text, UIColor *color) {
 - (UIView *)swCell:(NSString *)title sw:(UISwitch *)sw {
     UILabel *lbl = [[UILabel alloc] init];
     lbl.text = title;
-    lbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+    lbl.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
     lbl.textColor = [UIColor colorWithWhite:0.32 alpha:1];
     lbl.textAlignment = NSTextAlignmentCenter;
     lbl.adjustsFontSizeToFitWidth = YES;
     lbl.minimumScaleFactor = 0.8;
-    sw.transform = CGAffineTransformMakeScale(0.68, 0.68);
+    sw.transform = CGAffineTransformMakeScale(0.58, 0.58);
     UIStackView *item = [[UIStackView alloc] initWithArrangedSubviews:@[lbl, sw]];
     item.axis = UILayoutConstraintAxisVertical;
     item.alignment = UIStackViewAlignmentCenter;
-    item.spacing = 3;
+    item.spacing = 2;
     return item;
 }
 
@@ -604,14 +604,14 @@ static UIButton *NTM_actionTag(NSString *text, UIColor *color) {
     [rows addObject:[self buildNetRow]];
     UIStackView *v = [[UIStackView alloc] initWithArrangedSubviews:rows];
     v.axis = UILayoutConstraintAxisVertical;
-    v.spacing = 9;
+    v.spacing = 6;
     v.translatesAutoresizingMaskIntoConstraints = NO;
     [self addSubview:v];
     [NSLayoutConstraint activateConstraints:@[
-        [v.topAnchor constraintEqualToAnchor:self.topAnchor constant:12],
+        [v.topAnchor constraintEqualToAnchor:self.topAnchor constant:8],
         [v.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:14],
         [v.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-14],
-        [v.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-12],
+        [v.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-8],
     ]];
 
     [self reloadStatus];
@@ -620,19 +620,19 @@ static UIButton *NTM_actionTag(NSString *text, UIColor *color) {
 - (UIView *)buildNetRow {
     UILabel *netLabel = [[UILabel alloc] init];
     netLabel.text = @"网络";
-    netLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+    netLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
     netLabel.textColor = [UIColor colorWithWhite:0.33 alpha:1];
-    [netLabel.widthAnchor constraintEqualToConstant:34].active = YES;
+    [netLabel.widthAnchor constraintEqualToConstant:30].active = YES;
 
     NSMutableArray *btns = [NSMutableArray array];
     for (NSDictionary *opt in NTM_netOptions()) {
         UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
         [btn setTitle:opt[@"title"] forState:UIControlStateNormal];
-        btn.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
-        btn.layer.cornerRadius = 10;
+        btn.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+        btn.layer.cornerRadius = 9;
         btn.tag = [opt[@"policy"] integerValue];
         [btn addTarget:self action:@selector(netTapped:) forControlEvents:UIControlEventTouchUpInside];
-        [btn.heightAnchor constraintEqualToConstant:34].active = YES;
+        [btn.heightAnchor constraintEqualToConstant:30].active = YES;
         [btns addObject:btn];
         [_netButtons addObject:btn];
     }
@@ -689,16 +689,6 @@ static UIButton *NTM_actionTag(NSString *text, UIColor *color) {
                                       [UIColor colorWithRed:0.55 green:0.40 blue:0.90 alpha:1]);
     [grpPill addTarget:self action:@selector(groupTapped) forControlEvents:UIControlEventTouchUpInside];
     [pills addObject:grpPill];
-
-    // 增强功能汇总（有内容才显示）
-    NSMutableArray *feats = [NSMutableArray array];
-    if (NTM_feat(_appId, @"noBadge")) [feats addObject:@"仅隐角标"];
-    if (NTM_feat(_appId, @"noPreview")) [feats addObject:@"隐预览"];
-    if (NTM_feat(_appId, @"bgNet")) [feats addObject:@"后台断网"];
-    if (feats.count) {
-        [pills addObject:NTM_tag([feats componentsJoinedByString:@" + "],
-                                 [UIColor colorWithRed:0.40 green:0.45 blue:0.55 alpha:1])];
-    }
 
     // 按可用宽度自动换行铺排，避免任何一行被挤掉显示不全
     CGFloat avail = self.bounds.size.width - 28; // v 的左右内边距 14+14
@@ -843,6 +833,12 @@ static UIButton *NTM_actionTag(NSString *text, UIColor *color) {
     NSString *_searchText;
     NSInteger _filter; // 0全部 1已开启 2已关闭 3断网
     NSMutableDictionary *_snapshot;
+    UIStackView *_batchRow;
+    UIStackView *_editBar;
+    UIButton *_multiBtn;
+    UIButton *_multiAllBtn;
+    BOOL _editing;          // 是否多选批量模式
+    NSMutableSet *_selected; // 多选模式下选中的 appId
 }
 
 - (void)setRootController:(id)rootController {}
@@ -870,6 +866,8 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     _searchText = @"";
     _filter = 0;
     _snapshot = [NSMutableDictionary dictionary];
+    _selected = [NSMutableSet set];
+    _editing = NO;
 
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"反馈"
                                                                              style:UIBarButtonItemStylePlain
@@ -918,10 +916,30 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [UIColor colorWithWhite:0.35 alpha:1]);
     [customBtn addTarget:self action:@selector(customTapped) forControlEvents:UIControlEventTouchUpInside];
 
-    UIStackView *batchRow = [[UIStackView alloc] initWithArrangedSubviews:@[allOnBtn, allOffBtn, customBtn]];
-    batchRow.axis = UILayoutConstraintAxisHorizontal;
-    batchRow.distribution = UIStackViewDistributionFillEqually;
-    batchRow.spacing = 10;
+    _batchRow = [[UIStackView alloc] initWithArrangedSubviews:@[allOnBtn, allOffBtn, customBtn]];
+    _batchRow.axis = UILayoutConstraintAxisHorizontal;
+    _batchRow.distribution = UIStackViewDistributionFillEqually;
+    _batchRow.spacing = 10;
+
+    // 多选模式：全选 + 一键批量设置网络策略
+    _multiAllBtn = NTM_pillButton(@"全选",
+        [UIColor colorWithRed:0.45 green:0.62 blue:0.98 alpha:0.16],
+        [UIColor colorWithRed:0.16 green:0.38 blue:0.78 alpha:1]);
+    [_multiAllBtn addTarget:self action:@selector(multiSelectAllTapped) forControlEvents:UIControlEventTouchUpInside];
+    NSMutableArray *editBtns = [NSMutableArray arrayWithObject:_multiAllBtn];
+    for (NSDictionary *opt in NTM_netOptions()) {
+        UIButton *nb = NTM_pillButton(opt[@"title"],
+            [NTM_netColor([opt[@"policy"] integerValue]) colorWithAlphaComponent:0.15],
+            NTM_netColor([opt[@"policy"] integerValue]));
+        nb.tag = [opt[@"policy"] integerValue];
+        [nb addTarget:self action:@selector(editNetTapped:) forControlEvents:UIControlEventTouchUpInside];
+        [editBtns addObject:nb];
+    }
+    _editBar = [[UIStackView alloc] initWithArrangedSubviews:editBtns];
+    _editBar.axis = UILayoutConstraintAxisHorizontal;
+    _editBar.distribution = UIStackViewDistributionFillEqually;
+    _editBar.spacing = 6;
+    _editBar.hidden = YES;
 
     UIButton *snapBtn = NTM_pillButton(@"模式快照",
         [UIColor colorWithRed:0.55 green:0.40 blue:0.90 alpha:0.15],
@@ -931,8 +949,12 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [UIColor colorWithRed:0.30 green:0.66 blue:0.95 alpha:0.15],
         [UIColor colorWithRed:0.15 green:0.45 blue:0.78 alpha:1]);
     [grpBtn addTarget:self action:@selector(groupManagerTapped) forControlEvents:UIControlEventTouchUpInside];
+    _multiBtn = NTM_pillButton(@"多选",
+        [UIColor colorWithRed:0.30 green:0.78 blue:0.60 alpha:0.15],
+        [UIColor colorWithRed:0.10 green:0.52 blue:0.40 alpha:1]);
+    [_multiBtn addTarget:self action:@selector(multiTapped) forControlEvents:UIControlEventTouchUpInside];
 
-    UIStackView *featRow = [[UIStackView alloc] initWithArrangedSubviews:@[snapBtn, grpBtn]];
+    UIStackView *featRow = [[UIStackView alloc] initWithArrangedSubviews:@[snapBtn, grpBtn, _multiBtn]];
     featRow.axis = UILayoutConstraintAxisHorizontal;
     featRow.distribution = UIStackViewDistributionFillEqually;
     featRow.spacing = 10;
@@ -953,7 +975,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     _tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
     _tableView.backgroundColor = [UIColor clearColor];
     _tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
-    _tableView.rowHeight = 300; // 卡片 288 + 上下间距 12
+    _tableView.rowHeight = _editing ? 52 : 224;
     _tableView.contentInset = UIEdgeInsetsMake(4, 0, 4, 0);
 
     UIButton *exportBtn = NTM_pillButton(@"导出配置",
@@ -965,19 +987,24 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [UIColor colorWithRed:0.13 green:0.55 blue:0.24 alpha:1]);
     [importBtn addTarget:self action:@selector(importConfig) forControlEvents:UIControlEventTouchUpInside];
 
-    for (UIView *v in @[_tableView, batchRow, featRow, _statLabel, _searchBar, _filterSeg, _catSeg, exportBtn, importBtn]) {
+    for (UIView *v in @[_tableView, _batchRow, _editBar, featRow, _statLabel, _searchBar, _filterSeg, _catSeg, exportBtn, importBtn]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [self.view addSubview:v];
     }
-    [self.view bringSubviewToFront:batchRow];
+    [self.view bringSubviewToFront:_batchRow];
 
     [NSLayoutConstraint activateConstraints:@[
-        [batchRow.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
-        [batchRow.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
-        [batchRow.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
-        [batchRow.heightAnchor constraintEqualToConstant:40],
+        [_batchRow.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
+        [_batchRow.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
+        [_batchRow.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
+        [_batchRow.heightAnchor constraintEqualToConstant:40],
 
-        [featRow.topAnchor constraintEqualToAnchor:batchRow.bottomAnchor constant:8],
+        [_editBar.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
+        [_editBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:8],
+        [_editBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-8],
+        [_editBar.heightAnchor constraintEqualToConstant:40],
+
+        [featRow.topAnchor constraintEqualToAnchor:_batchRow.bottomAnchor constant:8],
         [featRow.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
         [featRow.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
         [featRow.heightAnchor constraintEqualToConstant:38],
@@ -1022,9 +1049,10 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
 
 #pragma mark - UITableViewDataSource
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return _curApps.count; }
-- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath { return 300; }
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath { return _editing ? 52 : 224; }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (_editing) return [self multiCellFor:indexPath];
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"card"];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"card"];
@@ -1053,6 +1081,138 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     card.onKeywordEdit = ^(NSString *aid) { [ws editKeyword:aid]; };
     card.onGroupPick = ^(NSString *aid) { [ws pickGroup:aid]; };
     return cell;
+}
+
+#pragma mark - 多选批量模式
+- (void)multiTapped {
+    _editing = !_editing;
+    [self updateMultiUIBar];
+    [_tableView reloadData];
+}
+- (void)updateMultiUIBar {
+    _batchRow.hidden = _editing;
+    _editBar.hidden = !_editing;
+    [_multiBtn setTitle:_editing ? @"取消" : @"多选" forState:UIControlStateNormal];
+    [_selected removeAllObjects];
+    [self updateSelAllTitle];
+}
+- (void)multiSelectAllTapped {
+    if (_curApps.count && _selected.count == _curApps.count) {
+        [_selected removeAllObjects];
+    } else {
+        for (NSDictionary *app in _curApps) [_selected addObject:app[@"id"]];
+    }
+    [self updateSelAllTitle];
+    [_tableView reloadData];
+}
+- (void)updateSelAllTitle {
+    BOOL all = _curApps.count > 0 && _selected.count == _curApps.count;
+    [_multiAllBtn setTitle:all ? @"取消全选" : @"全选" forState:UIControlStateNormal];
+}
+- (void)editNetTapped:(UIButton *)sender {
+    NSInteger policy = sender.tag;
+    NSArray *ids = _selected.allObjects;
+    if (!ids.count) return;
+    NSUserDefaults *prefs = NTM_prefs();
+    for (NSString *aid in ids) {
+        [prefs setInteger:policy forKey:NTM_netKey(aid)];
+    }
+    NSArray *copy = [ids copy];
+    dispatch_async(NTM_syncQueue(), ^{
+        [prefs synchronize];
+        NTM_postConfigChanged();
+        for (NSString *aid in copy) NTM_syncCellular(aid, policy);
+    });
+    [_tableView reloadData];
+    [self refreshStat];
+}
+- (UITableViewCell *)multiCellFor:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [_tableView dequeueReusableCellWithIdentifier:@"mcell"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"mcell"];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.backgroundColor = [UIColor clearColor];
+    }
+    for (UIView *v in cell.contentView.subviews) [v removeFromSuperview];
+    NSDictionary *app = _curApps[indexPath.row];
+    NSString *aid = app[@"id"];
+    BOOL sel = [_selected containsObject:aid];
+    NSInteger net = NTM_netRead(aid);
+    NSString *netTitle = @[@"wifi+流量", @"断网", @"打开wifi", @"流量"][net % 4];
+
+    UIButton *box = [UIButton buttonWithType:UIButtonTypeSystem];
+    box.userInteractionEnabled = NO;
+    box.layer.cornerRadius = 12;
+    box.clipsToBounds = YES;
+    box.titleLabel.font = [UIFont boldSystemFontOfSize:15];
+    if (sel) {
+        box.backgroundColor = [UIColor colorWithRed:0.22 green:0.52 blue:0.96 alpha:1];
+        [box setTitle:@"✓" forState:UIControlStateNormal];
+        [box setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    } else {
+        box.backgroundColor = [UIColor whiteColor];
+        box.layer.borderWidth = 2;
+        box.layer.borderColor = [UIColor colorWithWhite:0.75 alpha:1].CGColor;
+        [box setTitle:@"" forState:UIControlStateNormal];
+    }
+    [box.widthAnchor constraintEqualToConstant:24].active = YES;
+    [box.heightAnchor constraintEqualToConstant:24].active = YES;
+
+    UIImageView *icon = [[UIImageView alloc] init];
+    icon.contentMode = UIViewContentModeScaleAspectFill;
+    icon.layer.cornerRadius = 6;
+    icon.clipsToBounds = YES;
+    icon.backgroundColor = [UIColor colorWithRed:0.45 green:0.62 blue:0.98 alpha:1];
+    [icon.widthAnchor constraintEqualToConstant:24].active = YES;
+    [icon.heightAnchor constraintEqualToConstant:24].active = YES;
+    UIImage *ic = NTM_iconFor(aid);
+    if (ic) icon.image = ic;
+
+    UILabel *name = [[UILabel alloc] init];
+    name.text = app[@"name"];
+    name.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+    name.textColor = [UIColor colorWithWhite:0.13 alpha:1];
+    [name setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+
+    UIButton *tag = NTM_tag(net == 1 ? @"已断网" : netTitle, [NTM_netColor(net) colorWithAlphaComponent:0.9]);
+    tag.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[box, icon, name, tag]];
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.alignment = UIStackViewAlignmentCenter;
+    row.spacing = 12;
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UIView *card = [[UIView alloc] init];
+    card.backgroundColor = sel ? [UIColor colorWithRed:0.45 green:0.62 blue:0.98 alpha:0.12]
+                              : [UIColor whiteColor];
+    card.layer.cornerRadius = 14;
+    card.layer.shadowColor = [UIColor blackColor].CGColor;
+    card.layer.shadowOpacity = 0.04;
+    card.layer.shadowRadius = 6;
+    card.layer.shadowOffset = CGSizeMake(0, 1);
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    [card addSubview:row];
+    [cell.contentView addSubview:card];
+    [NSLayoutConstraint activateConstraints:@[
+        [card.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:3],
+        [card.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
+        [card.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
+        [card.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-3],
+        [row.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:12],
+        [row.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-12],
+        [row.centerYAnchor constraintEqualToAnchor:card.centerYAnchor],
+    ]];
+    return cell;
+}
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:NO];
+    if (!_editing) return;
+    NSString *aid = _curApps[indexPath.row][@"id"];
+    if ([_selected containsObject:aid]) [_selected removeObject:aid];
+    else [_selected addObject:aid];
+    [self updateSelAllTitle];
+    [tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
 }
 
 #pragma mark - 列表

@@ -833,8 +833,8 @@ static UIButton *NTM_actionTag(NSString *text, UIColor *color) {
     NSString *_searchText;
     NSInteger _filter; // 0全部 1已开启 2已关闭 3断网
     NSMutableDictionary *_snapshot;
-    UIStackView *_batchRow;
-    UIStackView *_editBar;
+    UIStackView *_topRow;   // 顶部一行：全部开启/关闭/自定义/模式快照/应用分组/多选
+    UIStackView *_editBar;  // 多选模式：取消/全选/网络策略
     UIButton *_multiBtn;
     UIButton *_multiAllBtn;
     BOOL _editing;          // 是否多选批量模式
@@ -916,17 +916,17 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [UIColor colorWithWhite:0.35 alpha:1]);
     [customBtn addTarget:self action:@selector(customTapped) forControlEvents:UIControlEventTouchUpInside];
 
-    _batchRow = [[UIStackView alloc] initWithArrangedSubviews:@[allOnBtn, allOffBtn, customBtn]];
-    _batchRow.axis = UILayoutConstraintAxisHorizontal;
-    _batchRow.distribution = UIStackViewDistributionFillEqually;
-    _batchRow.spacing = 10;
-
-    // 多选模式：全选 + 一键批量设置网络策略
+    // 多选模式：取消 + 全选 + 一键批量设置网络策略
+    UIButton *cancelBtn = NTM_pillButton(@"取消",
+        [UIColor colorWithRed:0.55 green:0.58 blue:0.65 alpha:0.18],
+        [UIColor colorWithWhite:0.35 alpha:1]);
+    [cancelBtn addTarget:self action:@selector(multiTapped) forControlEvents:UIControlEventTouchUpInside];
     _multiAllBtn = NTM_pillButton(@"全选",
         [UIColor colorWithRed:0.45 green:0.62 blue:0.98 alpha:0.16],
         [UIColor colorWithRed:0.16 green:0.38 blue:0.78 alpha:1]);
     [_multiAllBtn addTarget:self action:@selector(multiSelectAllTapped) forControlEvents:UIControlEventTouchUpInside];
-    NSMutableArray *editBtns = [NSMutableArray arrayWithObject:_multiAllBtn];
+    NSMutableArray *editBtns = [NSMutableArray arrayWithObject:cancelBtn];
+    [editBtns addObject:_multiAllBtn];
     for (NSDictionary *opt in NTM_netOptions()) {
         UIButton *nb = NTM_pillButton(opt[@"title"],
             [NTM_netColor([opt[@"policy"] integerValue]) colorWithAlphaComponent:0.15],
@@ -954,10 +954,17 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [UIColor colorWithRed:0.10 green:0.52 blue:0.40 alpha:1]);
     [_multiBtn addTarget:self action:@selector(multiTapped) forControlEvents:UIControlEventTouchUpInside];
 
-    UIStackView *featRow = [[UIStackView alloc] initWithArrangedSubviews:@[snapBtn, grpBtn, _multiBtn]];
-    featRow.axis = UILayoutConstraintAxisHorizontal;
-    featRow.distribution = UIStackViewDistributionFillEqually;
-    featRow.spacing = 10;
+    // 顶部一行：全部开启/关闭 + 自定义 + 模式快照 + 应用分组 + 多选
+    _topRow = [[UIStackView alloc] initWithArrangedSubviews:@[allOnBtn, allOffBtn, customBtn, snapBtn, grpBtn, _multiBtn]];
+    _topRow.axis = UILayoutConstraintAxisHorizontal;
+    _topRow.distribution = UIStackViewDistributionFillEqually;
+    _topRow.spacing = 5;
+    for (UIView *tb in _topRow.arrangedSubviews) {
+        ((UIButton *)tb).titleLabel.numberOfLines = 2;
+        ((UIButton *)tb).titleLabel.textAlignment = NSTextAlignmentCenter;
+        ((UIButton *)tb).titleLabel.lineBreakMode = NSLineBreakByWordWrapping;
+        ((UIButton *)tb).titleLabel.adjustsFontSizeToFitWidth = NO;
+    }
 
     _searchBar = [[UISearchBar alloc] init];
     _searchBar.placeholder = @"搜索应用名称";
@@ -987,29 +994,24 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [UIColor colorWithRed:0.13 green:0.55 blue:0.24 alpha:1]);
     [importBtn addTarget:self action:@selector(importConfig) forControlEvents:UIControlEventTouchUpInside];
 
-    for (UIView *v in @[_tableView, _batchRow, _editBar, featRow, _statLabel, _searchBar, _filterSeg, _catSeg, exportBtn, importBtn]) {
+    for (UIView *v in @[_tableView, _topRow, _editBar, _statLabel, _searchBar, _filterSeg, _catSeg, exportBtn, importBtn]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [self.view addSubview:v];
     }
-    [self.view bringSubviewToFront:_batchRow];
+    [self.view bringSubviewToFront:_topRow];
 
     [NSLayoutConstraint activateConstraints:@[
-        [_batchRow.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
-        [_batchRow.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
-        [_batchRow.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
-        [_batchRow.heightAnchor constraintEqualToConstant:40],
+        [_topRow.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
+        [_topRow.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:8],
+        [_topRow.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-8],
+        [_topRow.heightAnchor constraintEqualToConstant:44],
 
         [_editBar.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
-        [_editBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:8],
-        [_editBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-8],
+        [_editBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:6],
+        [_editBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-6],
         [_editBar.heightAnchor constraintEqualToConstant:40],
 
-        [featRow.topAnchor constraintEqualToAnchor:_batchRow.bottomAnchor constant:8],
-        [featRow.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
-        [featRow.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
-        [featRow.heightAnchor constraintEqualToConstant:38],
-
-        [_statLabel.topAnchor constraintEqualToAnchor:featRow.bottomAnchor constant:8],
+        [_statLabel.topAnchor constraintEqualToAnchor:_topRow.bottomAnchor constant:8],
         [_statLabel.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:20],
         [_statLabel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-20],
 
@@ -1090,9 +1092,8 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     [_tableView reloadData];
 }
 - (void)updateMultiUIBar {
-    _batchRow.hidden = _editing;
+    _topRow.hidden = _editing;
     _editBar.hidden = !_editing;
-    [_multiBtn setTitle:_editing ? @"取消" : @"多选" forState:UIControlStateNormal];
     [_selected removeAllObjects];
     [self updateSelAllTitle];
 }
@@ -1107,7 +1108,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
 }
 - (void)updateSelAllTitle {
     BOOL all = _curApps.count > 0 && _selected.count == _curApps.count;
-    [_multiAllBtn setTitle:all ? @"取消全选" : @"全选" forState:UIControlStateNormal];
+    [_multiAllBtn setTitle:all ? @"清空" : @"全选" forState:UIControlStateNormal];
 }
 - (void)editNetTapped:(UIButton *)sender {
     NSInteger policy = sender.tag;

@@ -104,7 +104,7 @@ static void NTM_netWrite(NSString *appId, NSInteger policy) {
 }
 static NSArray *NTM_netOptions(void) {
     return @[
-        @{@"title":@"打开wifi", @"policy":@2},
+        @{@"title":@"wifi",     @"policy":@2},
         @{@"title":@"流量",     @"policy":@3},
         @{@"title":@"wifi+流量", @"policy":@0},
         @{@"title":@"断网",     @"policy":@1},
@@ -505,12 +505,13 @@ static UIButton *NTM_actionTag(NSString *text, UIColor *color) {
 - (UIView *)swCell:(NSString *)title sw:(UISwitch *)sw {
     UILabel *lbl = [[UILabel alloc] init];
     lbl.text = title;
-    lbl.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
+    lbl.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
     lbl.textColor = [UIColor colorWithWhite:0.32 alpha:1];
     lbl.textAlignment = NSTextAlignmentCenter;
+    lbl.numberOfLines = 2;
     lbl.adjustsFontSizeToFitWidth = YES;
-    lbl.minimumScaleFactor = 0.8;
-    sw.transform = CGAffineTransformMakeScale(0.58, 0.58);
+    lbl.minimumScaleFactor = 0.6;
+    sw.transform = CGAffineTransformMakeScale(0.56, 0.56);
     UIStackView *item = [[UIStackView alloc] initWithArrangedSubviews:@[lbl, sw]];
     item.axis = UILayoutConstraintAxisVertical;
     item.alignment = UIStackViewAlignmentCenter;
@@ -577,30 +578,23 @@ static UIButton *NTM_actionTag(NSString *text, UIColor *color) {
         [_dimSwitches addObject:sw];
         [dimItems addObject:[self swCell:d[@"title"] sw:sw]];
     }
-    UIStackView *dimRow = [[UIStackView alloc] initWithArrangedSubviews:dimItems];
-    dimRow.axis = UILayoutConstraintAxisHorizontal;
-    dimRow.distribution = UIStackViewDistributionFillEqually;
-    dimRow.alignment = UIStackViewAlignmentCenter;
-    dimRow.spacing = 4;
-
-    // 增强功能行：仅隐藏角标 / 隐藏预览 / 后台自动断网
+    // 增强开关，与维度开关挤进同一行（8 个列，标签自动两行换行）
     _noBadgeSwitch = [[UISwitch alloc] init];
     [_noBadgeSwitch addTarget:self action:@selector(featChanged:) forControlEvents:UIControlEventValueChanged];
     _noPreviewSwitch = [[UISwitch alloc] init];
     [_noPreviewSwitch addTarget:self action:@selector(featChanged:) forControlEvents:UIControlEventValueChanged];
     _bgNetSwitch = [[UISwitch alloc] init];
     [_bgNetSwitch addTarget:self action:@selector(featChanged:) forControlEvents:UIControlEventValueChanged];
-    UIStackView *featRow = [[UIStackView alloc] initWithArrangedSubviews:@[
-        [self swCell:@"仅隐藏角标" sw:_noBadgeSwitch],
-        [self swCell:@"隐藏预览" sw:_noPreviewSwitch],
-        [self swCell:@"后台断网" sw:_bgNetSwitch],
-    ]];
-    featRow.axis = UILayoutConstraintAxisHorizontal;
-    featRow.distribution = UIStackViewDistributionFillEqually;
-    featRow.alignment = UIStackViewAlignmentCenter;
-    featRow.spacing = 6;
+    [dimItems addObject:[self swCell:@"仅隐藏角标" sw:_noBadgeSwitch]];
+    [dimItems addObject:[self swCell:@"隐藏预览" sw:_noPreviewSwitch]];
+    [dimItems addObject:[self swCell:@"后台断网" sw:_bgNetSwitch]];
+    UIStackView *swRow = [[UIStackView alloc] initWithArrangedSubviews:dimItems];
+    swRow.axis = UILayoutConstraintAxisHorizontal;
+    swRow.distribution = UIStackViewDistributionFillEqually;
+    swRow.alignment = UIStackViewAlignmentCenter;
+    swRow.spacing = 2;
 
-    NSMutableArray *rows = [NSMutableArray arrayWithArray:@[header, _statusRow, dimRow, featRow]];
+    NSMutableArray *rows = [NSMutableArray arrayWithArray:@[header, _statusRow, swRow]];
     [rows addObject:[self buildNetRow]];
     UIStackView *v = [[UIStackView alloc] initWithArrangedSubviews:rows];
     v.axis = UILayoutConstraintAxisVertical;
@@ -932,6 +926,9 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
             [NTM_netColor([opt[@"policy"] integerValue]) colorWithAlphaComponent:0.15],
             NTM_netColor([opt[@"policy"] integerValue]));
         nb.tag = [opt[@"policy"] integerValue];
+        nb.titleLabel.numberOfLines = 2;
+        nb.titleLabel.textAlignment = NSTextAlignmentCenter;
+        if ([opt[@"policy"] integerValue] == 0) [nb setTitle:@"wifi\n+流量" forState:UIControlStateNormal];
         [nb addTarget:self action:@selector(editNetTapped:) forControlEvents:UIControlEventTouchUpInside];
         [editBtns addObject:nb];
     }
@@ -982,7 +979,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     _tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
     _tableView.backgroundColor = [UIColor clearColor];
     _tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
-    _tableView.rowHeight = _editing ? 52 : 224;
+    _tableView.rowHeight = _editing ? 52 : 200;
     _tableView.contentInset = UIEdgeInsetsMake(4, 0, 4, 0);
 
     UIButton *exportBtn = NTM_pillButton(@"导出配置",
@@ -1028,10 +1025,10 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [_catSeg.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
 
         [exportBtn.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
-        [exportBtn.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-12],
+        [exportBtn.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-6],
         [exportBtn.heightAnchor constraintEqualToConstant:44],
         [importBtn.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
-        [importBtn.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-12],
+        [importBtn.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-6],
         [importBtn.heightAnchor constraintEqualToConstant:44],
         [exportBtn.trailingAnchor constraintEqualToAnchor:importBtn.leadingAnchor constant:-12],
         [exportBtn.widthAnchor constraintEqualToAnchor:importBtn.widthAnchor],
@@ -1039,7 +1036,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [_tableView.topAnchor constraintEqualToAnchor:_catSeg.bottomAnchor constant:12],
         [_tableView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [_tableView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [_tableView.bottomAnchor constraintEqualToAnchor:exportBtn.topAnchor constant:-12],
+        [_tableView.bottomAnchor constraintEqualToAnchor:exportBtn.topAnchor constant:-10],
     ]];
 }
 
@@ -1051,7 +1048,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
 
 #pragma mark - UITableViewDataSource
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return _curApps.count; }
-- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath { return _editing ? 52 : 224; }
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath { return _editing ? 52 : 200; }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     if (_editing) return [self multiCellFor:indexPath];
@@ -1139,7 +1136,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     NSString *aid = app[@"id"];
     BOOL sel = [_selected containsObject:aid];
     NSInteger net = NTM_netRead(aid);
-    NSString *netTitle = @[@"wifi+流量", @"断网", @"打开wifi", @"流量"][net % 4];
+    NSString *netTitle = @[@"wifi+流量", @"断网", @"wifi", @"流量"][net % 4];
 
     UIButton *box = [UIButton buttonWithType:UIButtonTypeSystem];
     box.userInteractionEnabled = NO;

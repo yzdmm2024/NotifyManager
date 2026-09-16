@@ -828,9 +828,15 @@ static UIButton *NTM_actionTag(NSString *text, UIColor *color) {
     NSInteger _filter; // 0全部 1已开启 2已关闭 3断网
     NSMutableDictionary *_snapshot;
     UIStackView *_topRow;   // 顶部一行：全部开启/关闭/自定义/模式快照/应用分组/多选
-    UIStackView *_editBar;  // 多选模式：取消/全选/网络策略
     UIButton *_multiBtn;
     UIButton *_multiAllBtn;
+    UIButton *_selEntryBtn; // 分类栏右侧"全选"入口
+    UIView *_editCol;       // 多选批量操作三行容器
+    UIStackView *_editRow1; // 取消/全选/通知/声音
+    UIStackView *_editRow2; // 后台断网/子项全开全关
+    UIStackView *_editRow3; // 网络策略
+    NSLayoutConstraint *_topH;
+    NSLayoutConstraint *_editH;
     BOOL _editing;          // 是否多选批量模式
     NSMutableSet *_selected; // 多选模式下选中的 appId
 }
@@ -892,6 +898,12 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     _catSeg.selectedSegmentIndex = 0;
     [_catSeg addTarget:self action:@selector(catChanged) forControlEvents:UIControlEventValueChanged];
 
+    _selEntryBtn = NTM_pillButton(@"全选",
+        [UIColor colorWithRed:0.45 green:0.62 blue:0.98 alpha:0.16],
+        [UIColor colorWithRed:0.16 green:0.38 blue:0.78 alpha:1]);
+    _selEntryBtn.titleLabel.font = [UIFont systemFontOfSize:14];
+    [_selEntryBtn addTarget:self action:@selector(selEntryTapped) forControlEvents:UIControlEventTouchUpInside];
+
     _filterSeg = [[UISegmentedControl alloc] initWithItems:@[@"全部", @"已开启", @"已关闭", @"断网"]];
     _filterSeg.selectedSegmentIndex = 0;
     _filterSeg.tintColor = [UIColor colorWithRed:0.45 green:0.62 blue:0.98 alpha:1];
@@ -910,7 +922,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [UIColor colorWithWhite:0.35 alpha:1]);
     [customBtn addTarget:self action:@selector(customTapped) forControlEvents:UIControlEventTouchUpInside];
 
-    // 多选模式：取消 + 全选 + 一键批量设置网络策略
+    // 多选模式：三行批量操作（选择/通知声音 / 增强子项 / 网络）
     UIButton *cancelBtn = NTM_pillButton(@"取消",
         [UIColor colorWithRed:0.55 green:0.58 blue:0.65 alpha:0.18],
         [UIColor colorWithWhite:0.35 alpha:1]);
@@ -919,8 +931,61 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [UIColor colorWithRed:0.45 green:0.62 blue:0.98 alpha:0.16],
         [UIColor colorWithRed:0.16 green:0.38 blue:0.78 alpha:1]);
     [_multiAllBtn addTarget:self action:@selector(multiSelectAllTapped) forControlEvents:UIControlEventTouchUpInside];
-    NSMutableArray *editBtns = [NSMutableArray arrayWithObject:cancelBtn];
-    [editBtns addObject:_multiAllBtn];
+
+    UIButton *onNotifBtn = NTM_pillButton(@"开通知",
+        [UIColor colorWithRed:0.45 green:0.78 blue:0.54 alpha:0.18],
+        [UIColor colorWithRed:0.13 green:0.55 blue:0.24 alpha:1]);
+    onNotifBtn.tag = 1;
+    [onNotifBtn addTarget:self action:@selector(batchMasterTapped:) forControlEvents:UIControlEventTouchUpInside];
+    UIButton *offNotifBtn = NTM_pillButton(@"关通知",
+        [UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:0.15],
+        [UIColor colorWithRed:0.72 green:0.17 blue:0.17 alpha:1]);
+    offNotifBtn.tag = 0;
+    [offNotifBtn addTarget:self action:@selector(batchMasterTapped:) forControlEvents:UIControlEventTouchUpInside];
+    UIButton *onSoundBtn = NTM_pillButton(@"开声音",
+        [UIColor colorWithRed:0.45 green:0.78 blue:0.54 alpha:0.18],
+        [UIColor colorWithRed:0.13 green:0.55 blue:0.24 alpha:1]);
+    onSoundBtn.tag = 1;
+    [onSoundBtn addTarget:self action:@selector(batchSoundTapped:) forControlEvents:UIControlEventTouchUpInside];
+    UIButton *offSoundBtn = NTM_pillButton(@"关声音",
+        [UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:0.15],
+        [UIColor colorWithRed:0.72 green:0.17 blue:0.17 alpha:1]);
+    offSoundBtn.tag = 0;
+    [offSoundBtn addTarget:self action:@selector(batchSoundTapped:) forControlEvents:UIControlEventTouchUpInside];
+
+    NSMutableArray *row1 = [NSMutableArray arrayWithObjects:cancelBtn, _multiAllBtn, onNotifBtn, offNotifBtn, onSoundBtn, offSoundBtn, nil];
+    _editRow1 = [[UIStackView alloc] initWithArrangedSubviews:row1];
+    _editRow1.axis = UILayoutConstraintAxisHorizontal;
+    _editRow1.distribution = UIStackViewDistributionFillEqually;
+    _editRow1.spacing = 5;
+
+    UIButton *onBgBtn = NTM_pillButton(@"开后台断网",
+        [UIColor colorWithRed:0.45 green:0.78 blue:0.54 alpha:0.18],
+        [UIColor colorWithRed:0.13 green:0.55 blue:0.24 alpha:1]);
+    onBgBtn.tag = 1;
+    [onBgBtn addTarget:self action:@selector(batchBgNetTapped:) forControlEvents:UIControlEventTouchUpInside];
+    UIButton *offBgBtn = NTM_pillButton(@"关后台断网",
+        [UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:0.15],
+        [UIColor colorWithRed:0.72 green:0.17 blue:0.17 alpha:1]);
+    offBgBtn.tag = 0;
+    [offBgBtn addTarget:self action:@selector(batchBgNetTapped:) forControlEvents:UIControlEventTouchUpInside];
+    UIButton *subOnBtn = NTM_pillButton(@"子项全开",
+        [UIColor colorWithRed:0.55 green:0.58 blue:0.65 alpha:0.18],
+        [UIColor colorWithRed:0.30 green:0.35 blue:0.42 alpha:1]);
+    subOnBtn.tag = 1;
+    [subOnBtn addTarget:self action:@selector(batchSubTapped:) forControlEvents:UIControlEventTouchUpInside];
+    UIButton *subOffBtn = NTM_pillButton(@"子项全关",
+        [UIColor colorWithRed:0.55 green:0.58 blue:0.65 alpha:0.18],
+        [UIColor colorWithRed:0.55 green:0.26 blue:0.26 alpha:1]);
+    subOffBtn.tag = 0;
+    [subOffBtn addTarget:self action:@selector(batchSubTapped:) forControlEvents:UIControlEventTouchUpInside];
+
+    _editRow2 = [[UIStackView alloc] initWithArrangedSubviews:@[onBgBtn, offBgBtn, subOnBtn, subOffBtn]];
+    _editRow2.axis = UILayoutConstraintAxisHorizontal;
+    _editRow2.distribution = UIStackViewDistributionFillEqually;
+    _editRow2.spacing = 5;
+
+    NSMutableArray *netBtns = [NSMutableArray array];
     for (NSDictionary *opt in NTM_netOptions()) {
         UIButton *nb = NTM_pillButton(opt[@"title"],
             [NTM_netColor([opt[@"policy"] integerValue]) colorWithAlphaComponent:0.15],
@@ -930,13 +995,33 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         nb.titleLabel.textAlignment = NSTextAlignmentCenter;
         if ([opt[@"policy"] integerValue] == 0) [nb setTitle:@"wifi\n+流量" forState:UIControlStateNormal];
         [nb addTarget:self action:@selector(editNetTapped:) forControlEvents:UIControlEventTouchUpInside];
-        [editBtns addObject:nb];
+        [netBtns addObject:nb];
     }
-    _editBar = [[UIStackView alloc] initWithArrangedSubviews:editBtns];
-    _editBar.axis = UILayoutConstraintAxisHorizontal;
-    _editBar.distribution = UIStackViewDistributionFillEqually;
-    _editBar.spacing = 6;
-    _editBar.hidden = YES;
+    _editRow3 = [[UIStackView alloc] initWithArrangedSubviews:netBtns];
+    _editRow3.axis = UILayoutConstraintAxisHorizontal;
+    _editRow3.distribution = UIStackViewDistributionFillEqually;
+    _editRow3.spacing = 5;
+
+    _editCol = [[UIView alloc] init];
+    _editCol.hidden = YES;
+    _editCol.clipsToBounds = YES;
+    for (UIView *r in @[_editRow1, _editRow2, _editRow3]) {
+        r.translatesAutoresizingMaskIntoConstraints = NO;
+        [r.heightAnchor constraintEqualToConstant:38].active = YES;
+        [_editCol addSubview:r];
+    }
+    _editRow1.translatesAutoresizingMaskIntoConstraints = NO;
+    _editRow2.translatesAutoresizingMaskIntoConstraints = NO;
+    _editRow3.translatesAutoresizingMaskIntoConstraints = NO;
+    [[_editRow1.topAnchor constraintEqualToAnchor:_editCol.topAnchor] setActive:YES];
+    [[_editRow1.leadingAnchor constraintEqualToAnchor:_editCol.leadingAnchor] setActive:YES];
+    [[_editRow1.trailingAnchor constraintEqualToAnchor:_editCol.trailingAnchor] setActive:YES];
+    [[_editRow2.topAnchor constraintEqualToAnchor:_editRow1.bottomAnchor constant:6] setActive:YES];
+    [[_editRow2.leadingAnchor constraintEqualToAnchor:_editCol.leadingAnchor] setActive:YES];
+    [[_editRow2.trailingAnchor constraintEqualToAnchor:_editCol.trailingAnchor] setActive:YES];
+    [[_editRow3.topAnchor constraintEqualToAnchor:_editRow2.bottomAnchor constant:6] setActive:YES];
+    [[_editRow3.leadingAnchor constraintEqualToAnchor:_editCol.leadingAnchor] setActive:YES];
+    [[_editRow3.trailingAnchor constraintEqualToAnchor:_editCol.trailingAnchor] setActive:YES];
 
     UIButton *snapBtn = NTM_pillButton(@"模式快照",
         [UIColor colorWithRed:0.55 green:0.40 blue:0.90 alpha:0.15],
@@ -991,24 +1076,33 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [UIColor colorWithRed:0.13 green:0.55 blue:0.24 alpha:1]);
     [importBtn addTarget:self action:@selector(importConfig) forControlEvents:UIControlEventTouchUpInside];
 
-    for (UIView *v in @[_tableView, _topRow, _editBar, _statLabel, _searchBar, _filterSeg, _catSeg, exportBtn, importBtn]) {
+    for (UIView *v in @[_tableView, _topRow, _editCol, _statLabel, _searchBar, _filterSeg, _catSeg, _selEntryBtn, exportBtn, importBtn]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [self.view addSubview:v];
     }
+    for (UIView *sv in @[_editRow1, _editRow2, _editRow3]) {
+        for (UIView *tb in ((UIStackView *)sv).arrangedSubviews) {
+            ((UIButton *)tb).titleLabel.numberOfLines = 2;
+            ((UIButton *)tb).titleLabel.textAlignment = NSTextAlignmentCenter;
+            ((UIButton *)tb).titleLabel.lineBreakMode = NSLineBreakByWordWrapping;
+        }
+    }
     [self.view bringSubviewToFront:_topRow];
 
+    _topH = [_topRow.heightAnchor constraintEqualToConstant:44];
+    _editH = [_editCol.heightAnchor constraintEqualToConstant:0];
     [NSLayoutConstraint activateConstraints:@[
         [_topRow.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
         [_topRow.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:8],
         [_topRow.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-8],
-        [_topRow.heightAnchor constraintEqualToConstant:44],
+        _topH,
 
-        [_editBar.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
-        [_editBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:6],
-        [_editBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-6],
-        [_editBar.heightAnchor constraintEqualToConstant:40],
+        [_editCol.topAnchor constraintEqualToAnchor:_topRow.bottomAnchor constant:6],
+        [_editCol.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:8],
+        [_editCol.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-8],
+        _editH,
 
-        [_statLabel.topAnchor constraintEqualToAnchor:_topRow.bottomAnchor constant:8],
+        [_statLabel.topAnchor constraintEqualToAnchor:_editCol.bottomAnchor constant:8],
         [_statLabel.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:20],
         [_statLabel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-20],
 
@@ -1022,7 +1116,12 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
 
         [_catSeg.topAnchor constraintEqualToAnchor:_filterSeg.bottomAnchor constant:6],
         [_catSeg.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
-        [_catSeg.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
+        [_catSeg.trailingAnchor constraintEqualToAnchor:_selEntryBtn.leadingAnchor constant:-8],
+
+        [_selEntryBtn.centerYAnchor constraintEqualToAnchor:_catSeg.centerYAnchor],
+        [_selEntryBtn.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
+        [_selEntryBtn.widthAnchor constraintEqualToConstant:64],
+        [_selEntryBtn.heightAnchor constraintEqualToConstant:34],
 
         [exportBtn.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
         [exportBtn.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-6],
@@ -1085,14 +1184,28 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
 #pragma mark - 多选批量模式
 - (void)multiTapped {
     _editing = !_editing;
+    if (_editing) [_selected removeAllObjects];
     [self updateMultiUIBar];
+    [self updateSelAllTitle];
+    [_tableView reloadData];
+}
+- (void)selEntryTapped {
+    // 分类栏"全选"：进入多选并全选当前分类
+    _editing = YES;
+    [_selected removeAllObjects];
+    for (NSDictionary *app in _curApps) [_selected addObject:app[@"id"]];
+    [self updateMultiUIBar];
+    [self updateSelAllTitle];
     [_tableView reloadData];
 }
 - (void)updateMultiUIBar {
+    _topH.constant = _editing ? 0 : 44;
     _topRow.hidden = _editing;
-    _editBar.hidden = !_editing;
-    [_selected removeAllObjects];
-    [self updateSelAllTitle];
+    _editH.constant = _editing ? 126 : 0;
+    _editCol.hidden = !_editing;
+    _tableView.rowHeight = _editing ? 52 : 200;
+    if (_editing) [_tableView setEditing:NO animated:NO];
+    [self.view layoutIfNeeded];
 }
 - (void)multiSelectAllTapped {
     if (_curApps.count && _selected.count == _curApps.count) {
@@ -1106,6 +1219,58 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
 - (void)updateSelAllTitle {
     BOOL all = _curApps.count > 0 && _selected.count == _curApps.count;
     [_multiAllBtn setTitle:all ? @"清空" : @"全选" forState:UIControlStateNormal];
+}
+- (void)batchMasterTapped:(UIButton *)sender {
+    BOOL v = sender.tag == 1;
+    NSArray *ids = _selected.allObjects;
+    if (!ids.count) return;
+    NSUserDefaults *prefs = NTM_prefs();
+    for (NSString *aid in ids) {
+        [prefs setBool:v forKey:NTM_key(aid, @"en")];
+        for (NSDictionary *d in NTM_dims()) [prefs setBool:v forKey:NTM_key(aid, d[@"key"])];
+    }
+    [self batchCommit:ids postSync:YES bgNet:NO];
+}
+- (void)batchSoundTapped:(UIButton *)sender {
+    BOOL v = sender.tag == 1;
+    NSArray *ids = _selected.allObjects;
+    if (!ids.count) return;
+    NSUserDefaults *prefs = NTM_prefs();
+    for (NSString *aid in ids) [prefs setBool:v forKey:NTM_key(aid, @"sound")];
+    [self batchCommit:ids postSync:YES bgNet:NO];
+}
+- (void)batchBgNetTapped:(UIButton *)sender {
+    BOOL v = sender.tag == 1;
+    NSArray *ids = _selected.allObjects;
+    if (!ids.count) return;
+    NSUserDefaults *prefs = NTM_prefs();
+    for (NSString *aid in ids) [prefs setBool:v forKey:NTM_key(aid, @"bgNet")];
+    [self batchCommit:ids postSync:NO bgNet:YES];
+}
+- (void)batchSubTapped:(UIButton *)sender {
+    BOOL v = sender.tag == 1;
+    NSArray *ids = _selected.allObjects;
+    if (!ids.count) return;
+    NSUserDefaults *prefs = NTM_prefs();
+    for (NSString *aid in ids) {
+        for (NSDictionary *d in NTM_dims()) [prefs setBool:v forKey:NTM_key(aid, d[@"key"])];
+        [prefs setBool:v forKey:NTM_key(aid, @"noBadge")];
+        [prefs setBool:v forKey:NTM_key(aid, @"noPreview")];
+    }
+    [self batchCommit:ids postSync:YES bgNet:NO];
+}
+- (void)batchCommit:(NSArray *)ids postSync:(BOOL)postSync bgNet:(BOOL)bgNet {
+    if (!ids.count) return;
+    NSUserDefaults *prefs = NTM_prefs();
+    NSArray *copy = [ids copy];
+    dispatch_async(NTM_syncQueue(), ^{
+        [prefs synchronize];
+        NTM_postConfigChanged();
+        if (postSync) for (NSString *aid in copy) NTM_syncSystem(aid);
+    });
+    if (bgNet) NTM_updateAnyBgNet();
+    [_tableView reloadData];
+    [self refreshStat];
 }
 - (void)editNetTapped:(UIButton *)sender {
     NSInteger policy = sender.tag;

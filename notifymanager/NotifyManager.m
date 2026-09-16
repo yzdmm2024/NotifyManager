@@ -716,6 +716,7 @@ static UIButton *NTM_actionTag(NSString *text, UIColor *color) {
     NSInteger policy = sender.tag;
     NTM_netWrite(_appId, policy);
     [self updateNetButtons];
+    [self reloadStatus];
     NTM_syncCellularAsync(_appId, policy);
     if (_onNetChange) _onNetChange(_appId, policy);
 }
@@ -827,16 +828,14 @@ static UIButton *NTM_actionTag(NSString *text, UIColor *color) {
     NSString *_searchText;
     NSInteger _filter; // 0全部 1已开启 2已关闭 3断网
     NSMutableDictionary *_snapshot;
-    UIStackView *_topRow;   // 顶部一行：全部开启/关闭/自定义/模式快照/应用分组/多选
-    UIButton *_multiBtn;
+    UIStackView *_topRow;   // 顶部一行：全部开启/关闭/自定义/模式快照/应用分组
     UIButton *_multiAllBtn;
     UIButton *_selEntryBtn; // 分类栏右侧"全选"入口
+    UIStackView *_headCol;  // 顶部行 + 多选批量栏 的纵向容器
     UIView *_editCol;       // 多选批量操作三行容器
     UIStackView *_editRow1; // 取消/全选/通知/声音
     UIStackView *_editRow2; // 后台断网/子项全开全关
     UIStackView *_editRow3; // 网络策略
-    NSLayoutConstraint *_topH;
-    NSLayoutConstraint *_editH;
     BOOL _editing;          // 是否多选批量模式
     NSMutableSet *_selected; // 多选模式下选中的 appId
 }
@@ -1002,26 +1001,16 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     _editRow3.distribution = UIStackViewDistributionFillEqually;
     _editRow3.spacing = 5;
 
-    _editCol = [[UIView alloc] init];
+    for (UIStackView *row in @[_editRow1, _editRow2, _editRow3]) {
+        row.translatesAutoresizingMaskIntoConstraints = NO;
+        [row.heightAnchor constraintEqualToConstant:40].active = YES;
+    }
+    // 多选批量操作三行打包成一个纵向栈，靠 hidden 自动折叠/展开（避免手写高度冲突）
+    _editCol = [[UIStackView alloc] initWithArrangedSubviews:@[_editRow1, _editRow2, _editRow3]];
+    _editCol.axis = UILayoutConstraintAxisVertical;
+    _editCol.spacing = 6;
     _editCol.hidden = YES;
     _editCol.clipsToBounds = YES;
-    for (UIView *r in @[_editRow1, _editRow2, _editRow3]) {
-        r.translatesAutoresizingMaskIntoConstraints = NO;
-        [r.heightAnchor constraintEqualToConstant:38].active = YES;
-        [_editCol addSubview:r];
-    }
-    _editRow1.translatesAutoresizingMaskIntoConstraints = NO;
-    _editRow2.translatesAutoresizingMaskIntoConstraints = NO;
-    _editRow3.translatesAutoresizingMaskIntoConstraints = NO;
-    [[_editRow1.topAnchor constraintEqualToAnchor:_editCol.topAnchor] setActive:YES];
-    [[_editRow1.leadingAnchor constraintEqualToAnchor:_editCol.leadingAnchor] setActive:YES];
-    [[_editRow1.trailingAnchor constraintEqualToAnchor:_editCol.trailingAnchor] setActive:YES];
-    [[_editRow2.topAnchor constraintEqualToAnchor:_editRow1.bottomAnchor constant:6] setActive:YES];
-    [[_editRow2.leadingAnchor constraintEqualToAnchor:_editCol.leadingAnchor] setActive:YES];
-    [[_editRow2.trailingAnchor constraintEqualToAnchor:_editCol.trailingAnchor] setActive:YES];
-    [[_editRow3.topAnchor constraintEqualToAnchor:_editRow2.bottomAnchor constant:6] setActive:YES];
-    [[_editRow3.leadingAnchor constraintEqualToAnchor:_editCol.leadingAnchor] setActive:YES];
-    [[_editRow3.trailingAnchor constraintEqualToAnchor:_editCol.trailingAnchor] setActive:YES];
 
     UIButton *snapBtn = NTM_pillButton(@"模式快照",
         [UIColor colorWithRed:0.55 green:0.40 blue:0.90 alpha:0.15],
@@ -1031,13 +1020,9 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [UIColor colorWithRed:0.30 green:0.66 blue:0.95 alpha:0.15],
         [UIColor colorWithRed:0.15 green:0.45 blue:0.78 alpha:1]);
     [grpBtn addTarget:self action:@selector(groupManagerTapped) forControlEvents:UIControlEventTouchUpInside];
-    _multiBtn = NTM_pillButton(@"多选",
-        [UIColor colorWithRed:0.30 green:0.78 blue:0.60 alpha:0.15],
-        [UIColor colorWithRed:0.10 green:0.52 blue:0.40 alpha:1]);
-    [_multiBtn addTarget:self action:@selector(multiTapped) forControlEvents:UIControlEventTouchUpInside];
 
-    // 顶部一行：全部开启/关闭 + 自定义 + 模式快照 + 应用分组 + 多选
-    _topRow = [[UIStackView alloc] initWithArrangedSubviews:@[allOnBtn, allOffBtn, customBtn, snapBtn, grpBtn, _multiBtn]];
+    // 顶部一行：全部开启/关闭 + 自定义 + 模式快照 + 应用分组（多选入口统一用分类栏右侧"全选"）
+    _topRow = [[UIStackView alloc] initWithArrangedSubviews:@[allOnBtn, allOffBtn, customBtn, snapBtn, grpBtn]];
     _topRow.axis = UILayoutConstraintAxisHorizontal;
     _topRow.distribution = UIStackViewDistributionFillEqually;
     _topRow.spacing = 5;
@@ -1047,6 +1032,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         ((UIButton *)tb).titleLabel.lineBreakMode = NSLineBreakByWordWrapping;
         ((UIButton *)tb).titleLabel.adjustsFontSizeToFitWidth = NO;
     }
+    [_topRow.heightAnchor constraintEqualToConstant:44].active = YES;
 
     _searchBar = [[UISearchBar alloc] init];
     _searchBar.placeholder = @"搜索应用名称";
@@ -1076,7 +1062,12 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [UIColor colorWithRed:0.13 green:0.55 blue:0.24 alpha:1]);
     [importBtn addTarget:self action:@selector(importConfig) forControlEvents:UIControlEventTouchUpInside];
 
-    for (UIView *v in @[_tableView, _topRow, _editCol, _statLabel, _searchBar, _filterSeg, _catSeg, _selEntryBtn, exportBtn, importBtn]) {
+    // 顶部行 + 多选批量栏 做成纵向栈，停用/启用时靠 hidden 自动折叠展开
+    _headCol = [[UIStackView alloc] initWithArrangedSubviews:@[_topRow, _editCol]];
+    _headCol.axis = UILayoutConstraintAxisVertical;
+    _headCol.spacing = 6;
+
+    for (UIView *v in @[_tableView, _headCol, _statLabel, _searchBar, _filterSeg, _catSeg, _selEntryBtn, exportBtn, importBtn]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [self.view addSubview:v];
     }
@@ -1087,22 +1078,14 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
             ((UIButton *)tb).titleLabel.lineBreakMode = NSLineBreakByWordWrapping;
         }
     }
-    [self.view bringSubviewToFront:_topRow];
+    [self.view bringSubviewToFront:_headCol];
 
-    _topH = [_topRow.heightAnchor constraintEqualToConstant:44];
-    _editH = [_editCol.heightAnchor constraintEqualToConstant:0];
     [NSLayoutConstraint activateConstraints:@[
-        [_topRow.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
-        [_topRow.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:8],
-        [_topRow.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-8],
-        _topH,
+        [_headCol.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
+        [_headCol.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:8],
+        [_headCol.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-8],
 
-        [_editCol.topAnchor constraintEqualToAnchor:_topRow.bottomAnchor constant:6],
-        [_editCol.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:8],
-        [_editCol.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-8],
-        _editH,
-
-        [_statLabel.topAnchor constraintEqualToAnchor:_editCol.bottomAnchor constant:8],
+        [_statLabel.topAnchor constraintEqualToAnchor:_headCol.bottomAnchor constant:8],
         [_statLabel.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:20],
         [_statLabel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-20],
 
@@ -1199,13 +1182,13 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     [_tableView reloadData];
 }
 - (void)updateMultiUIBar {
-    _topH.constant = _editing ? 0 : 44;
+    // UIStackView 对 arranged 子视图设置 hidden 会自动折叠/展开，无需手调高度
     _topRow.hidden = _editing;
-    _editH.constant = _editing ? 126 : 0;
     _editCol.hidden = !_editing;
     _tableView.rowHeight = _editing ? 52 : 200;
     if (_editing) [_tableView setEditing:NO animated:NO];
-    [self.view layoutIfNeeded];
+    [self.view setNeedsUpdateConstraints];
+    [UIView animateWithDuration:0.2 animations:^{ [self.view layoutIfNeeded]; }];
 }
 - (void)multiSelectAllTapped {
     if (_curApps.count && _selected.count == _curApps.count) {

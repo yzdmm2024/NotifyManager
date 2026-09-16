@@ -1050,7 +1050,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     _tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
     _tableView.backgroundColor = [UIColor clearColor];
     _tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
-    _tableView.rowHeight = _editing ? 52 : 200;
+    _tableView.rowHeight = _editing ? 64 : 200;
     _tableView.contentInset = UIEdgeInsetsMake(4, 0, 4, 0);
 
     UIButton *exportBtn = NTM_pillButton(@"导出配置",
@@ -1185,7 +1185,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     // UIStackView 对 arranged 子视图设置 hidden 会自动折叠/展开，无需手调高度
     _topRow.hidden = _editing;
     _editCol.hidden = !_editing;
-    _tableView.rowHeight = _editing ? 52 : 200;
+    _tableView.rowHeight = _editing ? 64 : 200;
     if (_editing) [_tableView setEditing:NO animated:NO];
     [self.view setNeedsUpdateConstraints];
     [UIView animateWithDuration:0.2 animations:^{ [self.view layoutIfNeeded]; }];
@@ -1323,11 +1323,51 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     UIButton *tag = NTM_tag(net == 1 ? @"已断网" : netTitle, [NTM_netColor(net) colorWithAlphaComponent:0.9]);
     tag.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
 
-    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[box, icon, name, tag]];
-    row.axis = UILayoutConstraintAxisHorizontal;
-    row.alignment = UIStackViewAlignmentCenter;
-    row.spacing = 12;
-    row.translatesAutoresizingMaskIntoConstraints = NO;
+    UIStackView *topRow = [[UIStackView alloc] initWithArrangedSubviews:@[box, icon, name, tag]];
+    topRow.axis = UILayoutConstraintAxisHorizontal;
+    topRow.alignment = UIStackViewAlignmentCenter;
+    topRow.spacing = 12;
+
+    UIColor *g = [UIColor colorWithRed:0.20 green:0.66 blue:0.35 alpha:1];
+    UIColor *r = [UIColor colorWithRed:0.80 green:0.24 blue:0.24 alpha:1];
+    UIColor *o = [UIColor colorWithRed:0.93 green:0.55 blue:0.12 alpha:1];
+    UIColor *gr = [UIColor colorWithWhite:0.5 alpha:1];
+    UIColor *bl = [UIColor colorWithRed:0.15 green:0.45 blue:0.78 alpha:1];
+    UIButton *(^chip)(NSString *, UIColor *) = ^UIButton *(NSString *t, UIColor *c) {
+        UIButton *b = NTM_tag(t, c);
+        b.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
+        [b.heightAnchor constraintEqualToConstant:24].active = YES;
+        return b;
+    };
+
+    BOOL en = NTM_read(aid, @"en");
+    BOOL sound = NTM_read(aid, @"sound");
+    BOOL bg = NTM_feat(aid, @"bgNet");
+    BOOL subAllOn = YES, subAllOff = YES;
+    for (NSDictionary *d in NTM_dims()) {
+        BOOL v = NTM_read(aid, d[@"key"]);
+        if (v) subAllOff = NO; else subAllOn = NO;
+    }
+    for (NSString *fk in @[@"noBadge", @"noPreview"]) {
+        BOOL v = NTM_feat(aid, fk);
+        if (v) subAllOff = NO; else subAllOn = NO;
+    }
+    UIButton *notiChip = chip(en ? @"通知开" : @"通知关", en ? g : r);
+    UIButton *soundChip = chip(sound ? @"声音开" : @"声音关", sound ? g : gr);
+    UIButton *bgChip = chip(bg ? @"后台开" : @"后台关", bg ? bl : gr);
+    UIButton *subChip = chip(subAllOn ? @"子项全开" : (subAllOff ? @"子项全关" : @"子项部分"),
+                             subAllOn ? g : (subAllOff ? gr : o));
+
+    UIStackView *subRow = [[UIStackView alloc] initWithArrangedSubviews:@[notiChip, soundChip, bgChip, subChip]];
+    subRow.axis = UILayoutConstraintAxisHorizontal;
+    subRow.alignment = UIStackViewAlignmentLeading;
+    subRow.spacing = 8;
+
+    UIStackView *col = [[UIStackView alloc] initWithArrangedSubviews:@[topRow, subRow]];
+    col.axis = UILayoutConstraintAxisVertical;
+    col.alignment = UIStackViewAlignmentFill;
+    col.spacing = 6;
+    col.translatesAutoresizingMaskIntoConstraints = NO;
 
     UIView *card = [[UIView alloc] init];
     card.backgroundColor = sel ? [UIColor colorWithRed:0.45 green:0.62 blue:0.98 alpha:0.12]
@@ -1338,16 +1378,16 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     card.layer.shadowRadius = 6;
     card.layer.shadowOffset = CGSizeMake(0, 1);
     card.translatesAutoresizingMaskIntoConstraints = NO;
-    [card addSubview:row];
+    [card addSubview:col];
     [cell.contentView addSubview:card];
     [NSLayoutConstraint activateConstraints:@[
         [card.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:3],
         [card.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
         [card.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
         [card.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-3],
-        [row.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:12],
-        [row.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-12],
-        [row.centerYAnchor constraintEqualToAnchor:card.centerYAnchor],
+        [col.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:12],
+        [col.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-12],
+        [col.centerYAnchor constraintEqualToAnchor:card.centerYAnchor],
     ]];
     return cell;
 }

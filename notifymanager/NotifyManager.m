@@ -832,7 +832,7 @@ static UIButton *NTM_actionTag(NSString *text, UIColor *color) {
     UIButton *_multiAllBtn;
     UIButton *_selEntryBtn; // 分类栏右侧"全选"入口
     UIStackView *_headCol;  // 顶部行 + 多选批量栏 的纵向容器
-    UIView *_editCol;       // 多选批量操作三行容器
+    UIStackView *_editCol;  // 多选批量操作三行容器
     UIStackView *_editRow1; // 取消/全选/通知/声音
     UIStackView *_editRow2; // 后台断网/子项全开全关
     UIStackView *_editRow3; // 网络策略

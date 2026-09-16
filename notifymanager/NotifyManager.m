@@ -3,7 +3,7 @@
 // 每个 App：总开关 + 锁定屏幕/通知中心/横幅/声音/标记 子开关 + 单应用重置
 // 增强功能：仅隐藏角标 / 隐藏预览 / 后台自动断网 / 关键词过滤 / 分组
 // 网络策略按钮：打开wifi/流量/wifi+流量/断网
-// 顶部：模式快照 / 应用分组 / 拦截日志；批量开启/关闭/自定义；筛选；搜索
+// 顶部：模式快照 / 应用分组；批量开启/关闭/自定义；筛选；搜索
 // 列表使用 UITableView 虚拟化，切换分类/搜索即时响应
 // 配置保存到 NSUserDefaults suiteName，Tweak 读取并拦截通知/断网
 // 设置变更时同步到系统通知设置 (BBSettingsGateway) 与蜂窝网络 (PSAppDataUsagePolicyCache)
@@ -21,14 +21,11 @@
 
 static NSDictionary *NTM_cellularPolicies(void);
 static NSInteger NTM_netReadSystem(NSString *appId);
+static NSArray *NTM_allApps(void);
 @interface PSViewController : UIViewController
 @end
 
 @interface NTMPrincipalController : PSViewController <UISearchBarDelegate, UIDocumentPickerDelegate, UITableViewDelegate, UITableViewDataSource>
-@end
-
-// 拦截日志显示页
-@interface NTMLogViewController : UITableViewController
 @end
 
 #pragma mark - 存储: NSUserDefaults suiteName (Tweak 读取同一份)
@@ -56,6 +53,16 @@ static BOOL NTM_readWith(NSUserDefaults *prefs, NSString *appId, NSString *dim) 
 static BOOL NTM_feat(NSString *appId, NSString *key) {
     id v = [NTM_prefs() objectForKey:NTM_key(appId, key)];
     return v ? [v boolValue] : NO;
+}
+// 维护"是否有 App 开了后台断网"的全局标记，供 Tweak 快速跳过场景 KVC（省电）。
+// 需在每次 bgNet 可能变化后调用。
+static void NTM_updateAnyBgNet(void) {
+    BOOL any = NO;
+    for (NSDictionary *app in NTM_allApps()) {
+        if (app[@"id"] && NTM_feat(app[@"id"], @"bgNet")) { any = YES; break; }
+    }
+    [NTM_prefs() setBool:any forKey:@"NTM_anyBgNet"];
+    [NTM_prefs() synchronize];
 }
 static void NTM_postConfigChanged(void) {
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
@@ -218,10 +225,7 @@ static void NTM_syncSystem(NSString *appId) {
         if ([gateway respondsToSelector:setSel]) {
             [gateway performSelector:setSel withObject:info withObject:appId];
         }
-        NSLog(@"[NTM] sync %@ en=%d lock=%d nc=%d banner=%d sound=%d badge=%d push=%lu",
-              appId, en, lock, nc, banner, sound, badge, (unsigned long)push);
     } @catch(NSException *e) {
-        NSLog(@"[NTM] sync %@ exception %@", appId, e);
     }
 }
 static void NTM_syncSystemAsync(NSString *appId) {
@@ -255,12 +259,10 @@ static void NTM_syncCellular(NSString *appId, NSInteger policy) {
             id cache = [(id)cls sharedInstance];
             if (cache) {
                 [cache setUsagePoliciesForBundle:appId cellular:cellular wifi:wifi];
-                NSLog(@"[NTM] cellular %@ policy=%ld (PSAppDataUsagePolicyCache)", appId, (long)policy);
                 return;
             }
         }
     } @catch(NSException *e) {
-        NSLog(@"[NTM] cellular %@ PSAppDataUsagePolicyCache exception %@", appId, e);
     }
     @try {
         void *handle = dlopen("/System/Library/Frameworks/CoreTelephony.framework/CoreTelephony", RTLD_LAZY);
@@ -277,7 +279,6 @@ static void NTM_syncCellular(NSString *appId, NSInteger policy) {
         }
         dlclose(handle);
     } @catch(NSException *e) {
-        NSLog(@"[NTM] cellular %@ exception %@", appId, e);
     }
 }
 static void NTM_syncCellularAsync(NSString *appId, NSInteger policy) {
@@ -415,7 +416,7 @@ static NSArray *NTM_allApps(void) {
     }];
     return out;
 }
-// App id -> 显示名（拦截日志等场景）
+// App id -> 显示名
 static NSDictionary *NTM_nameMap(void) {
     static NSDictionary *map = nil;
     static dispatch_once_t once;
@@ -779,6 +780,7 @@ static UIButton *NTM_actionTag(NSString *text, UIColor *color) {
     if (!key) return;
     [NTM_prefs() setBool:sender.on forKey:NTM_key(_appId, key)];
     [NTM_prefs() synchronize];
+    if ([key isEqualToString:@"bgNet"]) NTM_updateAnyBgNet();
     NTM_postConfigChanged();
     [self reloadFromPrefs];
     if (_onFeatChange) _onFeatChange(_appId, key, sender.on);
@@ -800,6 +802,7 @@ static UIButton *NTM_actionTag(NSString *text, UIColor *color) {
     [prefs setBool:NO forKey:NTM_key(_appId, @"bgNet")];
     [prefs removeObjectForKey:NTM_key(_appId, @"kw")];
     [prefs synchronize];
+    NTM_updateAnyBgNet();
     NTM_postConfigChanged();
     [self reloadFromPrefs];
     NTM_syncSystemAsync(_appId);
@@ -824,89 +827,6 @@ static UIButton *NTM_actionTag(NSString *text, UIColor *color) {
     [self reloadStatus];
 }
 
-@end
-
-#pragma mark - 拦截日志页
-@implementation NTMLogViewController {
-    NSArray *_entries;
-    NSArray *_typeMaps;
-    UIBarButtonItem *_emptyBtn;
-}
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.title = @"拦截日志";
-    self.overrideUserInterfaceStyle = UIUserInterfaceStyleLight;
-    self.view.backgroundColor = [UIColor colorWithRed:0.95 green:0.96 blue:0.98 alpha:1];
-    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"完成"
-                                                                             style:UIBarButtonItemStylePlain
-                                                                            target:self action:@selector(done)];
-    _emptyBtn = [[UIBarButtonItem alloc] initWithTitle:@"清空" style:UIBarButtonItemStylePlain target:self action:@selector(clearLog)];
-    self.navigationItem.rightBarButtonItem = _emptyBtn;
-    _typeMaps = @[
-        @{@"k":@"notif", @"t":@"拦截通知", @"c":[UIColor colorWithRed:0.87 green:0.24 blue:0.24 alpha:1]},
-        @{@"k":@"banner", @"t":@"拦截横幅", @"c":[UIColor colorWithRed:0.95 green:0.60 blue:0.15 alpha:1]},
-        @{@"k":@"sound", @"t":@"拦截声音", @"c":[UIColor colorWithRed:0.30 green:0.55 blue:1.0 alpha:1]},
-        @{@"k":@"badge", @"t":@"角标", @"c":[UIColor colorWithRed:0.55 green:0.40 blue:0.90 alpha:1]},
-        @{@"k":@"kw", @"t":@"关键词过滤", @"c":[UIColor colorWithRed:0.87 green:0.35 blue:0.55 alpha:1]},
-        @{@"k":@"bgNet", @"t":@"后台断网", @"c":[UIColor colorWithRed:0.42 green:0.75 blue:0.50 alpha:1]},
-    ];
-    [self reloadEntries];
-}
-- (void)done { [self dismissViewControllerAnimated:YES completion:nil]; }
-- (void)reloadEntries {
-    NSArray *arr = [NTM_prefs() objectForKey:@"NTM_log"];
-    _entries = [arr isKindOfClass:[NSArray class]] ? arr : @[];
-    [self.tableView reloadData];
-}
-- (void)clearLog {
-    [NTM_prefs() removeObjectForKey:@"NTM_log"];
-    [NTM_prefs() synchronize];
-    [self reloadEntries];
-}
-- (NSString *)typeTitle:(NSString *)key {
-    for (NSDictionary *m in _typeMaps) if ([m[@"k"] isEqualToString:key]) return m[@"t"];
-    return key;
-}
-- (UIColor *)typeColor:(NSString *)key {
-    for (NSDictionary *m in _typeMaps) if ([m[@"k"] isEqualToString:key]) return m[@"c"];
-    return [UIColor grayColor];
-}
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return _entries.count; }
-- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath { return 62; }
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"log"];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"log"];
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        cell.layer.cornerRadius = 12;
-        cell.clipsToBounds = YES;
-    }
-    NSDictionary *e = _entries[indexPath.row];
-    NSString *app = NTM_dispName(e[@"app"] ?: @"");
-    NSString *type = e[@"type"] ?: @"";
-    cell.textLabel.text = app;
-    cell.textLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
-    cell.textLabel.textColor = [UIColor colorWithWhite:0.15 alpha:1];
-    double ts = [e[@"t"] doubleValue];
-    NSDate *date = [NSDate dateWithTimeIntervalSince1970:ts];
-    NSDateFormatter *df = [[NSDateFormatter alloc] init];
-    df.dateFormat = @"MM-dd HH:mm:ss";
-    NSString *time = [df stringFromDate:date];
-    NSString *detail = e[@"d"] ?: @"";
-    NSString *typeTitle = [self typeTitle:type];
-    cell.detailTextLabel.text = [NSString stringWithFormat:@"%@  %@  %@", time, typeTitle, detail];
-    cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
-    cell.detailTextLabel.textColor = [UIColor colorWithWhite:0.45 alpha:1];
-    UIColor *c = [self typeColor:type];
-    UIView *badge = [[UIView alloc] initWithFrame:CGRectMake(0, 16, 4, 30)];
-    badge.backgroundColor = c;
-    badge.layer.cornerRadius = 2;
-    cell.contentView.backgroundColor = [UIColor whiteColor];
-    for (UIView *v in cell.contentView.subviews) if ([v isKindOfClass:[UIView class]] && v.tag == 9999) [v removeFromSuperview];
-    badge.tag = 9999;
-    [cell.contentView addSubview:badge];
-    return cell;
-}
 @end
 
 #pragma mark - 控制器
@@ -969,6 +889,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         NSArray *apps = NTM_allApps();
         dispatch_async(dispatch_get_main_queue(), ^{
             _allApps = apps;
+            NTM_updateAnyBgNet(); // 初始化"是否有后台断网"全局标记
             [self reloadList];
         });
     });
@@ -1010,12 +931,8 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [UIColor colorWithRed:0.30 green:0.66 blue:0.95 alpha:0.15],
         [UIColor colorWithRed:0.15 green:0.45 blue:0.78 alpha:1]);
     [grpBtn addTarget:self action:@selector(groupManagerTapped) forControlEvents:UIControlEventTouchUpInside];
-    UIButton *logBtn = NTM_pillButton(@"拦截日志",
-        [UIColor colorWithRed:0.95 green:0.60 blue:0.15 alpha:0.15],
-        [UIColor colorWithRed:0.85 green:0.50 blue:0.08 alpha:1]);
-    [logBtn addTarget:self action:@selector(logTapped) forControlEvents:UIControlEventTouchUpInside];
 
-    UIStackView *featRow = [[UIStackView alloc] initWithArrangedSubviews:@[snapBtn, grpBtn, logBtn]];
+    UIStackView *featRow = [[UIStackView alloc] initWithArrangedSubviews:@[snapBtn, grpBtn]];
     featRow.axis = UILayoutConstraintAxisHorizontal;
     featRow.distribution = UIStackViewDistributionFillEqually;
     featRow.spacing = 10;
@@ -1220,6 +1137,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
             [prefs setBool:NO forKey:NTM_key(aid, @"bgNet")]; // 全部关闭时顺带关后台断网
         }
     }
+    if (!val) NTM_updateAnyBgNet(); // 全部关闭时 bgNet 一并关闭，更新全局标记
     NSArray *idsCopy = [ids copy];
     dispatch_async(NTM_syncQueue(), ^{
         [prefs synchronize];
@@ -1333,6 +1251,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         if (kw) { [prefs removeObjectForKey:NTM_key(aid, @"kw")]; if ([kw isKindOfClass:[NSArray class]] && kw.count) NTM_kwSave(aid, kw); }
         if (d[@"group"]) [prefs setObject:d[@"group"] forKey:NTM_key(aid, @"group")];
     }
+    NTM_updateAnyBgNet();
     NSArray *idsCopy = [ids copy];
     dispatch_async(NTM_syncQueue(), ^{
         [prefs synchronize]; NTM_postConfigChanged();
@@ -1458,14 +1377,6 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     [self showAlertController:ac];
 }
 
-#pragma mark - 拦截日志
-- (void)logTapped {
-    NTMLogViewController *vc = [[NTMLogViewController alloc] initWithStyle:UITableViewStylePlain];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-    nav.modalPresentationStyle = UIModalPresentationFullScreen;
-    [self presentViewController:nav animated:YES completion:nil];
-}
-
 #pragma mark - 反馈
 - (void)feedback {
     NSString *subject = [@"通知管理插件反馈" stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
@@ -1542,6 +1453,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         NTM_syncSystemAsync(aid);
         count++;
     }
+    NTM_updateAnyBgNet();
     dispatch_async(NTM_syncQueue(), ^{ [prefs synchronize]; NTM_postConfigChanged(); });
     [self refreshAllCards];
     [self refreshStat];

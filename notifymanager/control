@@ -1,9 +1,9 @@
 Package: com.ntm.notifymanager
 Name: 通知管理
-Version: 2.3.1
+Version: 2.3.2
 Architecture: iphoneos-arm64
 Maintainer: yzdmm2024
 Author: yzdmm2024
 Section: Tweaks
-Description: 通知管理：注入SpringBoard拦截通知展示，按分类(用户/巨魔/系统)管理每个App通知与网络。总开关+锁定屏幕/通知中心/横幅/声音/标记子开关，增强功能：仅隐藏角标、隐藏预览、后台自动断网、关键词过滤、应用分组、模式快照、拦截日志、筛选；网络策略(打开wifi/流量/wifi+流量/断网)同步系统蜂窝设置，支持搜索、批量控制、单应用重置、配置导入导出、邮件反馈
+Description: 通知管理：注入SpringBoard拦截通知展示，按分类(用户/巨魔/系统)管理每个App通知与网络。总开关+锁定屏幕/通知中心/横幅/声音/标记子开关，增强功能：仅隐藏角标、隐藏预览、后台自动断网、关键词过滤、应用分组、模式快照、筛选；网络策略(打开wifi/流量/wifi+流量/断网)同步系统蜂窝设置，支持搜索、批量控制、单应用重置、配置导入导出、邮件反馈
 Depends: mobilesubstrate (>= 0.9.5000), preferenceloader

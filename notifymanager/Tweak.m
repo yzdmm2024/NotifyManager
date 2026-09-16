@@ -1,6 +1,6 @@
 // Tweak.m — 注入 SpringBoard，hook 通知展示 (iOS 16.6)
 // 总开关:   NCNotificationDispatcher -postNotificationWithRequest:
-//           同时在此做: 关键词过滤 / 隐藏预览 / 拦截日志
+//           同时在此做: 关键词过滤 / 隐藏预览
 // 横幅:     SBDashBoardNotificationPresenter -presentModalBannerAndExpandForNotificationRequest:
 // 声音:     SBNCSoundController -canPlaySoundForNotificationRequest:
 // 角标:     SBApplication -setBadgeValue: (含 仅隐藏角标)
@@ -133,31 +133,6 @@ static void NTM_blankPreview(id request) {
     } @catch(NSException *e) {}
 }
 
-#pragma mark - 拦截日志 (只记被拦截的事件)
-static dispatch_queue_t NTM_logQueue(void) {
-    static dispatch_queue_t q;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ q = dispatch_queue_create("com.ntm.log", DISPATCH_QUEUE_SERIAL); });
-    return q;
-}
-// 异步写日志，避免阻塞通知主线程
-static void NTM_logBlocked(NSString *appId, NSString *type, NSString *detail) {
-    NSUserDefaults *prefs = NTM_prefs();
-    dispatch_async(NTM_logQueue(), ^{
-        NSMutableArray *arr = [[prefs objectForKey:@"NTM_log"] mutableCopy];
-        if (![arr isKindOfClass:[NSMutableArray class]]) arr = [NSMutableArray array];
-        [arr insertObject:@{
-            @"t":@([NSDate date].timeIntervalSince1970),
-            @"app":appId ?: @"",
-            @"type":type ?: @"",
-            @"d":detail ?: @"",
-        } atIndex:0];
-        if (arr.count > 300) [arr removeObjectsInRange:NSMakeRange(300, arr.count - 300)];
-        [prefs setObject:arr forKey:@"NTM_log"];
-        [prefs synchronize];
-    });
-}
-
 #pragma mark - 网络策略 (后台断网用, 与设置面板同源)
 // policy: 0=wifi+流量 1=断网 2=打开wifi 3=流量
 static void NTM_applyNetPolicy(NSString *appId, NSInteger policy) {
@@ -203,25 +178,16 @@ static NSInteger NTM_netRead(NSString *appId) {
     return v ? [v integerValue] : 0;
 }
 
-#pragma mark - Hook NCNotificationDispatcher (总开关 + 关键词过滤 + 隐藏预览 + 日志)
+#pragma mark - Hook NCNotificationDispatcher (总开关 + 关键词过滤 + 隐藏预览)
 static void (*orig_postRequest)(id, SEL, id);
 static void hook_postRequest(id self, SEL _cmd, id request) {
     NSString *sectionId = NTM_sectionOf(request);
     if (sectionId.length) {
         // 关键词过滤：优先于总开关（命中即丢弃该条）
-        NSString *kw = NTM_matchKeyword(sectionId, request);
-        if (kw) {
-            NTM_logBlocked(sectionId, @"kw", kw);
-            return;
-        }
-        if (!NTM_on(sectionId, @"en")) {
-            NTM_logBlocked(sectionId, @"notif", @"总开关关闭");
-            return; // 总开关关闭 → 拦截整个通知
-        }
+        if (NTM_matchKeyword(sectionId, request)) return;
+        if (!NTM_on(sectionId, @"en")) return; // 总开关关闭 → 拦截整个通知
         // 隐藏预览：只显示 App 名，不放行具体内容
-        if (NTM_feat(sectionId, @"noPreview")) {
-            NTM_blankPreview(request);
-        }
+        if (NTM_feat(sectionId, @"noPreview")) NTM_blankPreview(request);
     }
     if (orig_postRequest)
         orig_postRequest(self, _cmd, request);
@@ -231,10 +197,7 @@ static void hook_postRequest(id self, SEL _cmd, id request) {
 static void (*orig_presentBanner)(id, SEL, id);
 static void hook_presentBanner(id self, SEL _cmd, id request) {
     NSString *sectionId = NTM_sectionOf(request);
-    if (sectionId.length && NTM_shouldBlock(sectionId, @"banner")) {
-        NTM_logBlocked(sectionId, @"banner", @"横幅");
-        return; // 拦截横幅
-    }
+    if (sectionId.length && NTM_shouldBlock(sectionId, @"banner")) return; // 拦截横幅
     if (orig_presentBanner)
         orig_presentBanner(self, _cmd, request);
 }
@@ -243,10 +206,7 @@ static void hook_presentBanner(id self, SEL _cmd, id request) {
 static BOOL (*orig_canPlaySound)(id, SEL, id);
 static BOOL hook_canPlaySound(id self, SEL _cmd, id request) {
     NSString *sectionId = NTM_sectionOf(request);
-    if (sectionId.length && NTM_shouldBlock(sectionId, @"sound")) {
-        NTM_logBlocked(sectionId, @"sound", @"声音");
-        return NO; // 拦截声音
-    }
+    if (sectionId.length && NTM_shouldBlock(sectionId, @"sound")) return NO; // 拦截声音
     return orig_canPlaySound ? orig_canPlaySound(self, _cmd, request) : YES;
 }
 
@@ -258,10 +218,7 @@ static void hook_setBadgeValue(id self, SEL _cmd, id value) {
     if (bundleId.length) {
         // 仅隐藏角标：保留全部通知，只藏桌面小红点
         BOOL noBadge = NTM_feat(bundleId, @"noBadge");
-        if (noBadge || NTM_shouldBlock(bundleId, @"badge")) {
-            NTM_logBlocked(bundleId, @"badge", noBadge ? @"仅隐藏角标" : @"角标关闭");
-            return; // 拦截角标更新
-        }
+        if (noBadge || NTM_shouldBlock(bundleId, @"badge")) return; // 拦截角标更新
     }
     if (orig_setBadgeValue)
         orig_setBadgeValue(self, _cmd, value);
@@ -272,10 +229,8 @@ static BOOL (*orig_insertRequest)(id, SEL, id);
 static BOOL hook_insertRequest(id self, SEL _cmd, id request) {
     NSString *sectionId = NTM_sectionOf(request);
     if (sectionId.length &&
-        (NTM_shouldBlock(sectionId, @"lock") || NTM_shouldBlock(sectionId, @"nc"))) {
-        NTM_logBlocked(sectionId, @"notif", @"锁屏/通知中心关闭");
+        (NTM_shouldBlock(sectionId, @"lock") || NTM_shouldBlock(sectionId, @"nc")))
         return YES; // 拦截列表插入
-    }
     return orig_insertRequest ? orig_insertRequest(self, _cmd, request) : YES;
 }
 
@@ -283,10 +238,8 @@ static BOOL (*orig_insertRequestCoalesced)(id, SEL, id, id);
 static BOOL hook_insertRequestCoalesced(id self, SEL _cmd, id request, id coalesce) {
     NSString *sectionId = NTM_sectionOf(request);
     if (sectionId.length &&
-        (NTM_shouldBlock(sectionId, @"lock") || NTM_shouldBlock(sectionId, @"nc"))) {
-        NTM_logBlocked(sectionId, @"notif", @"锁屏/通知中心关闭");
+        (NTM_shouldBlock(sectionId, @"lock") || NTM_shouldBlock(sectionId, @"nc")))
         return YES; // 拦截列表插入
-    }
     return orig_insertRequestCoalesced ? orig_insertRequestCoalesced(self, _cmd, request, coalesce) : YES;
 }
 
@@ -304,24 +257,32 @@ static NSString *NTM_bundleIdOf(id scene) {
 static BOOL NTM_bgNetOn(NSString *appId) {
     return NTM_feat(appId, @"bgNet");
 }
+// 全局快路径：面板维护"是否有 App 开了后台断网"。
+// 缺省按"有"处理（兼容旧数据，避免误跳过导致功能失效）；只有明确为关时才跳过 KVC。
+static BOOL NTM_anyBgNet(void) {
+    @synchronized(NTM_cache()) {
+        NSNumber *c = NTM_cache()[@"_bgNetAny"];
+        if (c) return [c boolValue];
+    }
+    id v = [NTM_prefs() objectForKey:@"NTM_anyBgNet"];
+    BOOL any = (v == nil) ? YES : [v boolValue];
+    @synchronized(NTM_cache()) { NTM_cache()[@"_bgNetAny"] = @(any); }
+    return any;
+}
 
 static void (*orig_bg)(id, SEL, id);
 static void hook_bg(id self, SEL _cmd, id scene) {
     if (orig_bg) orig_bg(self, _cmd, scene);
+    if (!NTM_anyBgNet()) return; // 没开任何后台断网 → 跳过 KVC
     NSString *bid = NTM_bundleIdOf(scene);
-    if (NTM_bgNetOn(bid)) {
-        NTM_applyNetPolicy(bid, 1); // 断网
-        NTM_logBlocked(bid, @"bgNet", @"切后台自动断网");
-    }
+    if (bid.length && NTM_bgNetOn(bid)) NTM_applyNetPolicy(bid, 1); // 断网
 }
 static void (*orig_fg)(id, SEL, id);
 static void hook_fg(id self, SEL _cmd, id scene) {
     if (orig_fg) orig_fg(self, _cmd, scene);
+    if (!NTM_anyBgNet()) return; // 没开任何后台断网 → 跳过 KVC
     NSString *bid = NTM_bundleIdOf(scene);
-    if (NTM_bgNetOn(bid)) {
-        NTM_applyNetPolicy(bid, NTM_netRead(bid)); // 恢复保存的网络策略
-        NTM_logBlocked(bid, @"bgNet", @"回前台恢复网络");
-    }
+    if (bid.length && NTM_bgNetOn(bid)) NTM_applyNetPolicy(bid, NTM_netRead(bid)); // 恢复保存的网络策略
 }
 
 static void tryHook(Class cls, SEL sel, IMP hook, IMP *orig) {

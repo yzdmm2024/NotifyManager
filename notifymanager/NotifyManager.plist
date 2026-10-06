@@ -13,7 +13,7 @@
 			<key>isController</key>
 			<true/>
 			<key>icon</key>
-			<string>NotifyManager.bundle/NotifyManager@2x.png</string>
+			<string>icon.png</string>
 			<key>label</key>
 			<string>通知管理</string>
 		</dict>

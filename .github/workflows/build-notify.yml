@@ -72,7 +72,10 @@ jobs:
           mkdir -p "$BUNDLE"
           cp NotifyManager.dylib "$BUNDLE/NotifyManager"
           cp notifymanager/Info.plist "$BUNDLE/Info.plist"
-          cp notifymanager/NotifyManager@2x.png "$BUNDLE/NotifyManager@2x.png"
+          # 设置面板图标三件套（规范：29/58/87，入口 plist icon 键=icon.png）
+          cp notifymanager/icon.png "$BUNDLE/icon.png"
+          cp notifymanager/icon@2x.png "$BUNDLE/icon@2x.png"
+          cp notifymanager/icon@3x.png "$BUNDLE/icon@3x.png"
           mkdir -p stage/DEBIAN
           # TweakInject: Tweak.dylib + plist
           mkdir -p "stage/var/jb/usr/lib/TweakInject"

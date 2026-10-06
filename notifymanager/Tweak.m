@@ -243,6 +243,54 @@ static BOOL hook_insertRequestCoalesced(id self, SEL _cmd, id request, id coales
     return orig_insertRequestCoalesced ? orig_insertRequestCoalesced(self, _cmd, request, coalesce) : YES;
 }
 
+#pragma mark - 自动授权通知权限 (抹除设置后免弹窗)
+// 开启"自动授权"后：App 调用 requestAuthorization 时不再向系统(及 usernoted)发请求，
+// 系统也就不会弹出"XX想给你发送通知"；直接按本插件里该 App 的总开关回调 granted/denied，
+// 使"抹除手机设置"后的授权状态与插件配置一致（未配置的 App 默认授权）。
+static BOOL NTM_autoAuthOn(void) {
+    return [NTM_prefs() boolForKey:@"NTM_autoAuth"];
+}
+
+// 尽力把系统通知授权置为允许（与设置面板的 NTM_syncSystem 同理），让通知能真正送达。
+// 无权限/失败时静默跳过，不影响"不弹窗"这一核心目标。
+static void NTM_grantSystem(NSString *bid) {
+    @try {
+        Class cls = NSClassFromString(@"BBSettingsGateway");
+        if (!cls) return;
+        id gw = [[cls alloc] init];
+        if (!gw) return;
+        SEL s = NSSelectorFromString(@"sectionInfoForSectionID:");
+        if (![gw respondsToSelector:s]) return;
+        id info = [gw performSelector:s withObject:bid];
+        if (!info) return;
+        [info setValue:@(YES) forKey:@"allowsNotifications"];
+        [info setValue:@(YES) forKey:@"showsInLockScreen"];
+        [info setValue:@(YES) forKey:@"showsInNotificationCenter"];
+        [info setValue:@(1) forKey:@"alertType"];
+        [info setValue:@(63) forKey:@"pushSettings"]; // 声音+角标+横幅
+        SEL set = NSSelectorFromString(@"setSectionInfo:forSectionID:");
+        if ([gw respondsToSelector:set]) [gw performSelector:set withObject:info withObject:bid];
+    } @catch(NSException *e) {}
+}
+
+static void (*orig_requestAuth)(id, SEL, unsigned long long, id);
+static void hook_requestAuth(id self, SEL _cmd, unsigned long long options, id handler) {
+    if (NTM_autoAuthOn()) {
+        NSString *bid = nil;
+        @try { bid = [[NSBundle mainBundle] bundleIdentifier]; } @catch(NSException *e) {}
+        BOOL granted = NTM_on(bid, @"en"); // 总开关：开=授权 关=拒绝（未配置默认开）
+        if (granted) NTM_grantSystem(bid); // 尽力让系统真正允许，通知能送达
+        if (handler) {
+            @try {
+                void (^block)(BOOL, NSError *) = (void (^)(BOOL, NSError *))handler;
+                block(granted, nil);
+            } @catch(NSException *e) {}
+        }
+        return; // 不调用 original → 系统不会弹出授权框
+    }
+    if (orig_requestAuth) orig_requestAuth(self, _cmd, options, handler);
+}
+
 #pragma mark - 切后台自动断网 (FBSceneManager)
 static NSString *NTM_bundleIdOf(id scene) {
     if (!scene) return nil;
@@ -336,5 +384,10 @@ __attribute__((constructor)) static void init() {
                 (IMP)hook_bg, (IMP *)&orig_bg);
         tryHook(fbm, sel_registerName("_noteSceneMovedToForeground:"),
                 (IMP)hook_fg, (IMP *)&orig_fg);
+
+        // 自动授权通知权限（注入 App 进程，需 Tweak.plist 含 Classes=UNUserNotificationCenter）
+        tryHook(objc_getClass("UNUserNotificationCenter"),
+                sel_registerName("requestAuthorizationWithOptions:completionHandler:"),
+                (IMP)hook_requestAuth, (IMP *)&orig_requestAuth);
     }
 }

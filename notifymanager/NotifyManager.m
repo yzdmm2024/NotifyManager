@@ -838,6 +838,7 @@ static UIButton *NTM_actionTag(NSString *text, UIColor *color) {
     UIStackView *_editRow3; // 网络策略
     BOOL _editing;          // 是否多选批量模式
     NSMutableSet *_selected; // 多选模式下选中的 appId
+    UISwitch *_autoAuthSwitch; // 全局：自动授权通知权限
 }
 
 - (void)setRootController:(id)rootController {}
@@ -890,6 +891,13 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
             [self reloadList];
         });
     });
+}
+
+- (void)autoAuthChanged {
+    [NTM_prefs() setBool:_autoAuthSwitch.on forKey:@"NTM_autoAuth"];
+    [NTM_prefs() synchronize];
+    NTM_postConfigChanged();
+    [self toast:_autoAuthSwitch.on ? @"已开启：打开 App 不再弹通知授权框" : @"已关闭自动授权"];
 }
 
 - (void)buildUI {
@@ -1062,8 +1070,27 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
         [UIColor colorWithRed:0.13 green:0.55 blue:0.24 alpha:1]);
     [importBtn addTarget:self action:@selector(importConfig) forControlEvents:UIControlEventTouchUpInside];
 
+    // 全局：自动授权通知权限（抹除手机设置后，按本插件配置静默授权，App 打开不再弹"想给你发送通知"）
+    _autoAuthSwitch = [[UISwitch alloc] init];
+    [_autoAuthSwitch addTarget:self action:@selector(autoAuthChanged) forControlEvents:UIControlEventValueChanged];
+    _autoAuthSwitch.on = [NTM_prefs() boolForKey:@"NTM_autoAuth"];
+    UILabel *aaLabel = [[UILabel alloc] init];
+    aaLabel.text = @"自动授权通知（抹除后免弹窗）";
+    aaLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
+    aaLabel.textColor = [UIColor colorWithWhite:0.2 alpha:1];
+    aaLabel.numberOfLines = 2;
+    UIStackView *aaRow = [[UIStackView alloc] initWithArrangedSubviews:@[aaLabel, _autoAuthSwitch]];
+    aaRow.axis = UILayoutConstraintAxisHorizontal;
+    aaRow.alignment = UIStackViewAlignmentCenter;
+    aaRow.spacing = 10;
+    aaRow.layoutMargins = UIEdgeInsetsMake(10, 14, 10, 14);
+    aaRow.layoutMarginsRelativeArrangement = YES;
+    aaRow.backgroundColor = [UIColor whiteColor];
+    aaRow.layer.cornerRadius = 14;
+    [aaRow.heightAnchor constraintEqualToConstant:52].active = YES;
+
     // 顶部行 + 多选批量栏 做成纵向栈，停用/启用时靠 hidden 自动折叠展开
-    _headCol = [[UIStackView alloc] initWithArrangedSubviews:@[_topRow, _editCol]];
+    _headCol = [[UIStackView alloc] initWithArrangedSubviews:@[aaRow, _topRow, _editCol]];
     _headCol.axis = UILayoutConstraintAxisVertical;
     _headCol.spacing = 6;
 

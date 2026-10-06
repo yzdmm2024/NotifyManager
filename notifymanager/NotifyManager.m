@@ -1073,7 +1073,7 @@ static UIButton *NTM_pillButton(NSString *title, UIColor *bg, UIColor *fg) {
     // 全局：自动授权通知权限（抹除手机设置后，按本插件配置静默授权，App 打开不再弹"想给你发送通知"）
     _autoAuthSwitch = [[UISwitch alloc] init];
     [_autoAuthSwitch addTarget:self action:@selector(autoAuthChanged) forControlEvents:UIControlEventValueChanged];
-    _autoAuthSwitch.on = [NTM_prefs() boolForKey:@"NTM_autoAuth"];
+    _autoAuthSwitch.on = ({ id _v = [NTM_prefs() objectForKey:@"NTM_autoAuth"]; _v ? [_v boolValue] : YES; }); // 默认开启
     UILabel *aaLabel = [[UILabel alloc] init];
     aaLabel.text = @"自动授权通知（抹除后免弹窗）";
     aaLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];

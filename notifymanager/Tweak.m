@@ -248,7 +248,10 @@ static BOOL hook_insertRequestCoalesced(id self, SEL _cmd, id request, id coales
 // 系统也就不会弹出"XX想给你发送通知"；直接按本插件里该 App 的总开关回调 granted/denied，
 // 使"抹除手机设置"后的授权状态与插件配置一致（未配置的 App 默认授权）。
 static BOOL NTM_autoAuthOn(void) {
-    return [NTM_prefs() boolForKey:@"NTM_autoAuth"];
+    // 默认开启：装上即免弹窗，符合“抹除设置后打开 App 就不出现授权框”的使用预期。
+    // 用户仍可在面板里手动关闭（关闭后恢复系统原生弹窗）。
+    id v = [NTM_prefs() objectForKey:@"NTM_autoAuth"];
+    return v ? [v boolValue] : YES;
 }
 
 // 尽力把系统通知授权置为允许（与设置面板的 NTM_syncSystem 同理），让通知能真正送达。
@@ -348,6 +351,9 @@ __attribute__((constructor)) static void init() {
                                         NULL, NTM_cacheInvalidated,
                                         CFSTR("com.ntm.notifymanager.configChanged"),
                                         NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+
+        // 自动授权通知默认开启：保证重装/抹除后打开 App 不再弹授权框（面板可手动关）
+        [NTM_prefs() registerDefaults:@{@"NTM_autoAuth": @YES}];
 
         // 总开关 + 关键词过滤 + 隐藏预览
         tryHook(objc_getClass("NCNotificationDispatcher"),

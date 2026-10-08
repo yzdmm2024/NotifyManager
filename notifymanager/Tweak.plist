@@ -4,12 +4,18 @@
 <dict>
 	<key>Filter</key>
 	<dict>
+		<!-- 注入范围：SpringBoard + 所有 App 进程。
+		     原来只写 com.apple.springboard，导致断网代码(NetGuard)只进了系统进程，
+		     第三方 App 进程里根本没加载，所以 per-App 断网不生效。
+		     UIApplication 在每个 UIKit App 里都存在，用它把范围扩到"所有 App 进程"；
+		     通知相关 hook 都是按类命中的，在非 SpringBoard 进程里自动跳过，无副作用。 -->
 		<key>Bundles</key>
 		<array>
 			<string>com.apple.springboard</string>
 		</array>
 		<key>Classes</key>
 		<array>
+			<string>UIApplication</string>
 			<string>UNUserNotificationCenter</string>
 		</array>
 		<key>Mode</key>

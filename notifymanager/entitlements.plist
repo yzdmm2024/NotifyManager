@@ -10,5 +10,14 @@
 	<array>
 		<string>kTCCServiceUserNotificationsClient</string>
 	</array>
+	<!-- 写入「按 App 网络策略」(PSAppDataUsagePolicyCache) 所需；缺失会被系统静默拒绝，
+	     表现为面板设了断网、系统设置里仍显示「无线局域网」、WiFi 照样能连 -->
+	<key>com.apple.CommCenter.fine-grained</key>
+	<array>
+		<string>cellular-plan</string>
+		<string>data-usage</string>
+		<string>data-allowed-write</string>
+		<string>preferences-write</string>
+	</array>
 </dict>
 </plist>

@@ -245,19 +245,28 @@ static NSDictionary *NTM_cellularPolicies(void) {
     });
     return dict;
 }
+// iOS 14+ 起 PSAppDataUsagePolicyCache 在 SettingsCellular.framework，iOS 13- 在 Preferences.framework。
+// 原来只 dlopen Preferences.framework，导致新系统上找不到该类、写入被静默跳过 → 设置里看不到「关闭」。
+static void NTM_loadPolicyFramework(void) {
+    static BOOL loaded = NO;
+    if (loaded) return;
+    if (NSClassFromString(@"PSAppDataUsagePolicyCache")) { loaded = YES; return; }
+    dlopen("/System/Library/PrivateFrameworks/SettingsCellular.framework/SettingsCellular", RTLD_NOW);
+    if (NSClassFromString(@"PSAppDataUsagePolicyCache")) { loaded = YES; return; }
+    dlopen("/System/Library/PrivateFrameworks/Preferences.framework/Preferences", RTLD_NOW);
+    if (NSClassFromString(@"PSAppDataUsagePolicyCache")) loaded = YES;
+}
+
 static void NTM_syncCellular(NSString *appId, NSInteger policy) {
     if (!appId.length) return;
     BOOL cellular = (policy == 0 || policy == 3);
     BOOL wifi = (policy == 0 || policy == 2);
+    NTM_loadPolicyFramework();
     @try {
         Class cls = NSClassFromString(@"PSAppDataUsagePolicyCache");
-        if (!cls) {
-            dlopen("/System/Library/PrivateFrameworks/Preferences.framework/Preferences", RTLD_NOW);
-            cls = NSClassFromString(@"PSAppDataUsagePolicyCache");
-        }
         if (cls) {
             id cache = [(id)cls sharedInstance];
-            if (cache) {
+            if ([cache respondsToSelector:@selector(setUsagePoliciesForBundle:cellular:wifi:)]) {
                 [cache setUsagePoliciesForBundle:appId cellular:cellular wifi:wifi];
                 return;
             }

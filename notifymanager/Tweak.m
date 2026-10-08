@@ -354,6 +354,31 @@ static void hook_fg(id self, SEL _cmd, id scene) {
     if (bid.length && NTM_bgNetOn(bid)) NTM_applyNetPolicy(bid, NTM_netRead(bid)); // 恢复保存的网络策略
 }
 
+#pragma mark - 屏蔽「允许"XX"使用无线数据」启动弹窗
+// 国行机在 App 蜂窝权限未确定时，App 一联网就弹「允许使用无线数据？」选择框。
+// SpringBoard 在 App 进入前台时用 SBApplicationLaunchAlertEvaluatorForNetworkBasedAlertItems
+// 评估要不要展示这类"网络类启动弹窗"。面板里设为「断网」的 App 直接判定为不展示，
+// 达到「没网就是没网」，同时避免用户误点弹窗把权限改回允许、和面板设置对不上。
+static NSString *NTM_appBundleId(id app) {
+    NSString *bid = nil;
+    @try { bid = [app bundleIdentifier]; } @catch(NSException *e) {}
+    if (!bid.length) { @try { bid = [app valueForKeyPath:@"bundleIdentifier"]; } @catch(NSException *e) {} }
+    return bid.length ? bid : nil;
+}
+static NSUInteger (*orig_shouldShowLaunchAlert)(id, SEL, id);
+static NSUInteger hook_shouldShowLaunchAlert(id self, SEL _cmd, id app) {
+    NSString *bid = NTM_appBundleId(app);
+    if (bid.length && NTM_netRead(bid) == 1) return 0; // 断网 → 不展示
+    if (orig_shouldShowLaunchAlert) return orig_shouldShowLaunchAlert(self, _cmd, app);
+    return 0;
+}
+static void (*orig_showLaunchAlert)(id, SEL, NSUInteger, id);
+static void hook_showLaunchAlert(id self, SEL _cmd, NSUInteger type, id app) {
+    NSString *bid = NTM_appBundleId(app);
+    if (bid.length && NTM_netRead(bid) == 1) return; // 断网 → 不展示
+    if (orig_showLaunchAlert) orig_showLaunchAlert(self, _cmd, type, app);
+}
+
 static void tryHook(Class cls, SEL sel, IMP hook, IMP *orig) {
     if (!cls) return;
     Method m = class_getInstanceMethod(cls, sel);
@@ -413,5 +438,13 @@ __attribute__((constructor)) static void init() {
         tryHook(objc_getClass("UNUserNotificationCenter"),
                 sel_registerName("requestAuthorizationWithOptions:completionHandler:"),
                 (IMP)hook_requestAuth, (IMP *)&orig_requestAuth);
+
+        // 屏蔽「允许"XX"使用无线数据」启动弹窗（面板里设为断网的 App）
+        tryHook(objc_getClass("SBApplicationLaunchAlertEvaluatorForNetworkBasedAlertItems"),
+                sel_registerName("shouldShowLaunchAlertForApplication:"),
+                (IMP)hook_shouldShowLaunchAlert, (IMP *)&orig_shouldShowLaunchAlert);
+        tryHook(objc_getClass("SBApplicationLaunchAlertService"),
+                sel_registerName("showLaunchAlertOfType:forApplication:"),
+                (IMP)hook_showLaunchAlert, (IMP *)&orig_showLaunchAlert);
     }
 }

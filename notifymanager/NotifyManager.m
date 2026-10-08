@@ -7,6 +7,7 @@
 // 列表使用 UITableView 虚拟化，切换分类/搜索即时响应
 // 配置保存到 NSUserDefaults suiteName，Tweak 读取并拦截通知/断网
 // 设置变更时同步到系统通知设置 (BBSettingsGateway) 与蜂窝网络 (PSAppDataUsagePolicyCache)
+// 断网落盘路径: policiesFor: -> setCellular:/setWifi: -> setPolicies:completion:
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
@@ -14,9 +15,16 @@
 #import <dlfcn.h>
 
 #pragma mark - 接口声明
+// iOS 15/16/17 真实接口（无 setUsagePoliciesForBundle:cellular:wifi:）：
 @interface PSAppDataUsagePolicyCache : NSObject
 + (instancetype)sharedInstance;
-- (void)setUsagePoliciesForBundle:(NSString *)bundleId cellular:(BOOL)cellular wifi:(BOOL)wifi;
+- (id)policiesFor:(NSString *)bundleId;                              // -> CTDataUsagePolicies
+- (void)setPolicies:(id)policy completion:(void (^)(void))completion;
+@end
+@interface CTDataUsagePolicies : NSObject
+- (instancetype)init:(NSString *)bundleId withCellularPolicy:(long long)cellular andWifiPolicy:(long long)wifi;
+- (void)setCellular:(long long)cellular;                             // 1=允许 0=禁止
+- (void)setWifi:(long long)wifi;                                     // 1=允许 0=禁止
 @end
 
 static NSDictionary *NTM_cellularPolicies(void);
@@ -257,36 +265,53 @@ static void NTM_loadPolicyFramework(void) {
     if (NSClassFromString(@"PSAppDataUsagePolicyCache")) loaded = YES;
 }
 
+// 按系统「设置 → 蜂窝网络 → App → 允许App使用数据」的真实写入路径落盘（已用 Frida 抓系统 UI 验证）：
+//   1. cache = PSAppDataUsagePolicyCache.sharedInstance
+//   2. pol   = [cache policiesFor:appId]              // CTDataUsagePolicies
+//   3. [pol setCellular:0/1] [pol setWifi:0/1]        // 1=允许 0=禁止
+//   4. [cache setPolicies:pol completion:^{}]
+// 原实现调用的 setUsagePoliciesForBundle:cellular:wifi: 在 iOS 15/16/17 上根本不存在，
+// CoreTelephony 的 _CTServerConnectionSetCellularUsagePolicy 也没有导出，写入一直是空操作，
+// 所以系统策略从未改变 → 连着 WiFi 时 App 照样有网。此处改为真实路径。
 static void NTM_syncCellular(NSString *appId, NSInteger policy) {
     if (!appId.length) return;
-    BOOL cellular = (policy == 0 || policy == 3);
-    BOOL wifi = (policy == 0 || policy == 2);
+    // policy: 0=wifi+流量 1=断网 2=只wifi 3=只流量；系统侧 1=允许 0=禁止
+    long long cell = (policy == 0 || policy == 3) ? 1 : 0;
+    long long wifi = (policy == 0 || policy == 2) ? 1 : 0;
     NTM_loadPolicyFramework();
     @try {
         Class cls = NSClassFromString(@"PSAppDataUsagePolicyCache");
-        if (cls) {
-            id cache = [(id)cls sharedInstance];
-            if ([cache respondsToSelector:@selector(setUsagePoliciesForBundle:cellular:wifi:)]) {
-                [cache setUsagePoliciesForBundle:appId cellular:cellular wifi:wifi];
-                return;
+        if (!cls) return;
+        id cache = ((id (*)(id, SEL))objc_msgSend)(cls, NSSelectorFromString(@"sharedInstance"));
+        if (!cache) return;
+
+        id pol = nil;
+        SEL selPoliciesFor = NSSelectorFromString(@"policiesFor:");
+        if ([cache respondsToSelector:selPoliciesFor]) {
+            pol = ((id (*)(id, SEL, id))objc_msgSend)(cache, selPoliciesFor, appId);
+        }
+        if (pol) {
+            SEL sCell = NSSelectorFromString(@"setCellular:");
+            SEL sWifi = NSSelectorFromString(@"setWifi:");
+            if ([pol respondsToSelector:sCell])
+                ((void (*)(id, SEL, long long))objc_msgSend)(pol, sCell, cell);
+            if ([pol respondsToSelector:sWifi])
+                ((void (*)(id, SEL, long long))objc_msgSend)(pol, sWifi, wifi);
+        } else {
+            Class polCls = NSClassFromString(@"CTDataUsagePolicies");
+            SEL initSel = NSSelectorFromString(@"init:withCellularPolicy:andWifiPolicy:");
+            if (polCls && [polCls instancesRespondToSelector:initSel]) {
+                id obj = ((id (*)(id, SEL))objc_msgSend)((id)polCls, NSSelectorFromString(@"alloc"));
+                pol = ((id (*)(id, SEL, id, long long, long long))objc_msgSend)(obj, initSel, appId, cell, wifi);
             }
         }
-    } @catch(NSException *e) {
-    }
-    @try {
-        void *handle = dlopen("/System/Library/Frameworks/CoreTelephony.framework/CoreTelephony", RTLD_LAZY);
-        if (!handle) return;
-        void *(*createConn)(CFAllocatorRef, void *, void *) = dlsym(handle, "_CTServerConnectionCreate");
-        int (*setPolicy)(void *, NSString *, NSDictionary *) = dlsym(handle, "_CTServerConnectionSetCellularUsagePolicy");
-        if (createConn && setPolicy) {
-            void *conn = createConn(kCFAllocatorDefault, NULL, NULL);
-            if (conn) {
-                NSString *cell = cellular ? @"kCTCellularDataUsagePolicyAlwaysAllow" : @"kCTCellularDataUsagePolicyDeny";
-                NSString *wifiS = wifi ? @"kCTWiFiDataUsagePolicyAlwaysAllow" : @"kCTWiFiDataUsagePolicyDeny";
-                setPolicy(conn, appId, @{@"kCTCellularDataUsagePolicy":cell, @"kCTWiFiDataUsagePolicy":wifiS});
-            }
+        if (!pol) return;
+
+        SEL setPol = NSSelectorFromString(@"setPolicies:completion:");
+        if ([cache respondsToSelector:setPol]) {
+            void (^done)(void) = ^{};
+            ((void (*)(id, SEL, id, id))objc_msgSend)(cache, setPol, pol, done);
         }
-        dlclose(handle);
     } @catch(NSException *e) {
     }
 }

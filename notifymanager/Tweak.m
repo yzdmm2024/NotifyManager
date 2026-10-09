@@ -12,6 +12,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <dlfcn.h>
+#import <mach/mach.h>
 
 #pragma mark - Preferences 私有类（网络权限同源）
 // iOS 15/16/17 真实接口（无 setUsagePoliciesForBundle:cellular:wifi:）：
@@ -384,9 +385,132 @@ static void hook_showLaunchAlert(id self, SEL _cmd, NSUInteger type, id app) {
     if (orig_showLaunchAlert) orig_showLaunchAlert(self, _cmd, type, app);
 }
 
+#pragma mark - 直接拦截 CommCenter 的「允许"XX"使用无线数据」请求（不弹窗）
+// 实测(iOS 16.6)：该弹窗由 CommCenter 给 SpringBoard 发消息，经
+// +[SBUserNotificationCenter dispatchUserNotification:flags:replyPort:auditToken:] 创建，
+// 消息字典里只有 AlertSource / AlertHeader(App 中文名)，没有 bundle id。
+// 前面 hook 的 SBApplicationLaunchAlertEvaluator* 只覆盖「App 启动评估」这条路，
+// CommCenter 直发的请求不经过它，所以还会漏弹。
+// 这里对面板里设为「断网」的 App 直接回一条「不允许」报文，不创建弹窗。
+// 回「不允许」写的是系统数据策略，和面板 NTM_applyNetPolicy 同源，
+// 解除断网后面板会把它同步回允许，不会留下和面板不一致的残留状态。
+//
+// 报文格式为实测值（frida 抓 mach_msg 得到）：
+//   28 字节 = 24 字节头 + 4 字节体；msgh_bits=0x12(COPY_SEND)、msgh_id=0；
+//   体为 uint32 响应码，0 = Default = 「不允许」。
+static void NTM_sendDenyReply(uint64_t replyPort) {
+    if (!replyPort) return;
+    struct {
+        mach_msg_header_t header;
+        uint32_t response;
+    } msg = {0};
+    msg.header.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, MACH_MSGH_BITS_ZERO);
+    msg.header.msgh_size = (mach_msg_size_t)sizeof(msg); // 28
+    msg.header.msgh_remote_port = (mach_port_t)replyPort;
+    msg.header.msgh_id = 0;
+    msg.response = 0; // 0 = Default = 「不允许」
+    @try {
+        mach_msg(&msg.header, MACH_SEND_MSG, (mach_msg_size_t)sizeof(msg),
+                 0, MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+    } @catch (NSException *e) {}
+}
+
+// 「允许“微信”使用无线数据？」→ 微信
+static NSString *NTM_appNameOfHeader(NSString *header) {
+    if (!header.length) return nil;
+    NSArray *quotes = @[@[@"\u201C", @"\u201D"], @[@"\"", @"\""]];
+    for (NSArray *q in quotes) {
+        NSRange l = [header rangeOfString:q[0]];
+        if (l.location == NSNotFound) continue;
+        NSUInteger from = NSMaxRange(l);
+        if (from >= header.length) continue;
+        NSRange r = [header rangeOfString:q[1]
+                                  options:0
+                                    range:NSMakeRange(from, header.length - from)];
+        if (r.location == NSNotFound) continue;
+        NSString *name = [header substringWithRange:NSMakeRange(from, r.location - from)];
+        if (name.length) return name;
+    }
+    return nil;
+}
+
+// App 中文名 → bundle id：遍历已安装 App，优先精确匹配本地化名，
+// 匹配不到再退回「本地化名是该名字的子串」中最长的那个。
+static NSString *NTM_bundleIdOfName(NSString *name) {
+    if (!name.length) return nil;
+    @try {
+        Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
+        SEL selWS = NSSelectorFromString(@"defaultWorkspace");
+        if (!wsCls || ![wsCls respondsToSelector:selWS]) return nil;
+        id ws = ((id (*)(id, SEL))objc_msgSend)(wsCls, selWS);
+        SEL selAll = NSSelectorFromString(@"allInstalledApplications");
+        if (!ws || ![ws respondsToSelector:selAll]) return nil;
+        id arr = ((id (*)(id, SEL))objc_msgSend)(ws, selAll);
+        if (!arr) return nil;
+        NSUInteger n = [arr count];
+        NSString *exact = nil, *partial = nil;
+        NSUInteger partialLen = 0;
+        for (NSUInteger i = 0; i < n; i++) {
+            id proxy = [arr objectAtIndex:i];
+            NSString *nm = nil, *bid = nil;
+            SEL sName = NSSelectorFromString(@"localizedName");
+            if ([proxy respondsToSelector:sName])
+                nm = ((id (*)(id, SEL))objc_msgSend)(proxy, sName);
+            SEL sBid = NSSelectorFromString(@"applicationIdentifier");
+            if ([proxy respondsToSelector:sBid])
+                bid = ((id (*)(id, SEL))objc_msgSend)(proxy, sBid);
+            if (!nm.length || !bid.length) continue;
+            if ([nm isEqualToString:name]) {
+                if (!exact) exact = bid;
+            } else if (nm.length > partialLen && [name rangeOfString:nm].location != NSNotFound) {
+                partial = bid;
+                partialLen = nm.length;
+            }
+            if (exact) break;
+        }
+        return exact ?: partial;
+    } @catch (NSException *e) {}
+    return nil;
+}
+
+// 这条 CommCenter 请求是不是「面板里已断网的 App」
+static BOOL NTM_shouldDenyWirelessAlert(id msg) {
+    @try {
+        if (!msg) return NO;
+        NSString *src = [msg objectForKey:@"AlertSource"];
+        if (![src isKindOfClass:[NSString class]] || ![src isEqualToString:@"CommCenter"]) return NO;
+        NSString *hdr = [msg objectForKey:@"AlertHeader"];
+        if (![hdr isKindOfClass:[NSString class]] || ![hdr containsString:@"使用无线数据"]) return NO;
+        NSString *bid = NTM_bundleIdOfName(NTM_appNameOfHeader(hdr));
+        if (!bid.length) return NO;
+        // 与前面启动弹窗 hook 同一条件：断网 或 开了后台断网
+        return (NTM_netRead(bid) == 1 || NTM_bgNetOn(bid));
+    } @catch (NSException *e) { return NO; }
+}
+
+// auditToken 是结构体（>16 字节）时按指针传，这里统一用 void* 承接并原样透传
+static void (*orig_dispatch)(id, SEL, id, uint64_t, uint64_t, void *);
+static void hook_dispatch(id self, SEL _cmd, id msg, uint64_t flags,
+                          uint64_t replyPort, void *auditToken) {
+    if (NTM_shouldDenyWirelessAlert(msg)) {
+        NTM_sendDenyReply(replyPort); // 回「不允许」，不创建弹窗
+        return;
+    }
+    if (orig_dispatch) orig_dispatch(self, _cmd, msg, flags, replyPort, auditToken);
+}
+
 static void tryHook(Class cls, SEL sel, IMP hook, IMP *orig) {
     if (!cls) return;
     Method m = class_getInstanceMethod(cls, sel);
+    if (!m) return;
+    *orig = method_getImplementation(m);
+    method_setImplementation(m, hook);
+}
+
+// 类方法版本（dispatchUserNotification 是 + 方法）
+static void tryHookMeta(Class cls, SEL sel, IMP hook, IMP *orig) {
+    if (!cls) return;
+    Method m = class_getClassMethod(cls, sel);
     if (!m) return;
     *orig = method_getImplementation(m);
     method_setImplementation(m, hook);
@@ -451,5 +575,10 @@ __attribute__((constructor)) static void init() {
         tryHook(objc_getClass("SBApplicationLaunchAlertService"),
                 sel_registerName("showLaunchAlertOfType:forApplication:"),
                 (IMP)hook_showLaunchAlert, (IMP *)&orig_showLaunchAlert);
+
+        // 直接拦截 CommCenter 直发的「允许"XX"使用无线数据」请求（回「不允许」，不弹窗）
+        tryHookMeta(objc_getClass("SBUserNotificationCenter"),
+                    sel_registerName("dispatchUserNotification:flags:replyPort:auditToken:"),
+                    (IMP)hook_dispatch, (IMP *)&orig_dispatch);
     }
 }

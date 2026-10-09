@@ -348,10 +348,13 @@ static void hook_bg(id self, SEL _cmd, id scene) {
 }
 static void (*orig_fg)(id, SEL, id);
 static void hook_fg(id self, SEL _cmd, id scene) {
+    // 先恢复网络策略再调用原函数：系统在 orig_fg 内部会评估要不要弹「允许使用无线数据」，
+    // 如果策略还停留在"后台断网"状态，拦截 hook 又没拦住就会弹窗。
+    if (NTM_anyBgNet()) {
+        NSString *bid = NTM_bundleIdOf(scene);
+        if (bid.length && NTM_bgNetOn(bid)) NTM_applyNetPolicy(bid, NTM_netRead(bid)); // 恢复保存的网络策略
+    }
     if (orig_fg) orig_fg(self, _cmd, scene);
-    if (!NTM_anyBgNet()) return; // 没开任何后台断网 → 跳过 KVC
-    NSString *bid = NTM_bundleIdOf(scene);
-    if (bid.length && NTM_bgNetOn(bid)) NTM_applyNetPolicy(bid, NTM_netRead(bid)); // 恢复保存的网络策略
 }
 
 #pragma mark - 屏蔽「允许"XX"使用无线数据」启动弹窗
@@ -368,14 +371,16 @@ static NSString *NTM_appBundleId(id app) {
 static NSUInteger (*orig_shouldShowLaunchAlert)(id, SEL, id);
 static NSUInteger hook_shouldShowLaunchAlert(id self, SEL _cmd, id app) {
     NSString *bid = NTM_appBundleId(app);
-    if (bid.length && NTM_netRead(bid) == 1) return 0; // 断网 → 不展示
+    // 断网 或 开启了后台断网 → 不展示（后台断网的App回前台时也会触发这个评估，需要一并拦住）
+    if (bid.length && (NTM_netRead(bid) == 1 || NTM_bgNetOn(bid))) return 0;
     if (orig_shouldShowLaunchAlert) return orig_shouldShowLaunchAlert(self, _cmd, app);
     return 0;
 }
 static void (*orig_showLaunchAlert)(id, SEL, NSUInteger, id);
 static void hook_showLaunchAlert(id self, SEL _cmd, NSUInteger type, id app) {
     NSString *bid = NTM_appBundleId(app);
-    if (bid.length && NTM_netRead(bid) == 1) return; // 断网 → 不展示
+    // 断网 或 开启了后台断网 → 不展示
+    if (bid.length && (NTM_netRead(bid) == 1 || NTM_bgNetOn(bid))) return;
     if (orig_showLaunchAlert) orig_showLaunchAlert(self, _cmd, type, app);
 }
 

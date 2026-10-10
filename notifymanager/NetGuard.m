@@ -23,6 +23,7 @@
 #import <sys/socket.h>
 #import <netinet/in.h>
 #import <arpa/inet.h>
+#import <unistd.h>
 
 static NSString *const kNGSuite   = @"com.ntm.notifymanager";
 static NSString *const kNGChanged = @"com.ntm.notifymanager.configChanged";
@@ -50,6 +51,8 @@ static NSString *NG_bundleId(void) {
 // 热路径只读 g_blocked，避免每次连接都碰 NSUserDefaults
 static volatile BOOL g_blocked  = NO;
 static volatile BOOL g_resolved = NO;
+// 后台断网置位：App 切后台时由 Tweak.m 的前后台回调经 NG_setBgBlocked() 置位
+static volatile BOOL g_bgBlocked = NO;
 
 static void NG_refresh(void) {
     // 先置位：万一 NSUserDefaults 内部再触发被 hook 的函数，也不会递归
@@ -68,9 +71,9 @@ static void NG_refresh(void) {
 
 // 构造期 mainBundle 偶发未就绪，故首次用到时再懒解析一次
 static inline BOOL NG_blocked(void) {
-    if (g_blocked) return YES;
+    if (g_blocked || g_bgBlocked) return YES;
     if (!g_resolved) NG_refresh();
-    return g_blocked;
+    return g_blocked || g_bgBlocked;
 }
 
 static void NG_onConfigChanged(CFNotificationCenterRef center, void *observer,
@@ -96,6 +99,30 @@ static BOOL NG_isLocal(const struct sockaddr *sa) {
         return NO;
     }
     return YES; // AF_UNIX / AF_SYSTEM 等非 IP 地址
+}
+
+#pragma mark - 后台断网 (Tweak.m 的 UIApplication 前后台回调调用)
+
+// 已建立的连接不经过 connect()，只置 g_bgBlocked 拦不住：
+// 进后台时把本进程所有指向远端的 socket 直接 shutdown，让内核层面的收发停掉；
+// 回前台后由 App 自己按常规网络错误重连（新连接此时已恢复放行）。
+static void NG_closeRemoteSockets(void) {
+    int maxfd = getdtablesize();
+    if (maxfd <= 0) return;
+    struct sockaddr_storage ss;
+    socklen_t sl;
+    for (int fd = 0; fd < maxfd; fd++) {
+        sl = sizeof(ss);
+        if (getpeername(fd, (struct sockaddr *)&ss, &sl) != 0) continue; // 未连接/非 socket
+        if (NG_isLocal((struct sockaddr *)&ss)) continue;                // 本机通信放行
+        shutdown(fd, SHUT_RDWR);
+    }
+}
+
+// on=YES: 进后台 → 关闭已建立的远端连接并开始拒绝新连接；on=NO: 回前台 → 恢复
+void NG_setBgBlocked(BOOL on) {
+    g_bgBlocked = on;
+    if (on) NG_closeRemoteSockets();
 }
 
 #pragma mark - Hook 实现

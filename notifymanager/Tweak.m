@@ -5,7 +5,9 @@
 // 声音:     SBNCSoundController -canPlaySoundForNotificationRequest:
 // 角标:     SBApplication -setBadgeValue: (含 仅隐藏角标)
 // 列表:     NCNotificationStructuredListViewController / NCNotificationCombinedListViewController -insertNotificationRequest...
-// 后台断网: FBSceneManager -_noteSceneMovedToBackground: / -_noteSceneMovedToForeground:
+// 后台断网: App 进程内监听 UIApplication 前后台通知 → NetGuard 关闭/拒绝本进程的远端连接
+//          （iOS 16 的 FBSceneManager 已无 _noteSceneMovedTo*，旧 hook 静默失败；
+//            SpringBoard 进程也缺 data-allowed-write 权限，写不了系统数据策略）
 // 设置面板通过 NSUserDefaults suiteName 通信
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -14,18 +16,8 @@
 #import <dlfcn.h>
 #import <mach/mach.h>
 
-#pragma mark - Preferences 私有类（网络权限同源）
-// iOS 15/16/17 真实接口（无 setUsagePoliciesForBundle:cellular:wifi:）：
-@interface PSAppDataUsagePolicyCache : NSObject
-+ (instancetype)sharedInstance;
-- (id)policiesFor:(NSString *)bundleId;                              // -> CTDataUsagePolicies
-- (void)setPolicies:(id)policy completion:(void (^)(void))completion;
-@end
-@interface CTDataUsagePolicies : NSObject
-- (instancetype)init:(NSString *)bundleId withCellularPolicy:(long long)cellular andWifiPolicy:(long long)wifi;
-- (void)setCellular:(long long)cellular;                             // 1=允许 0=禁止
-- (void)setWifi:(long long)wifi;                                     // 1=允许 0=禁止
-@end
+// NetGuard.m（同一 dylib）：后台断网的进程内拦截开关
+extern void NG_setBgBlocked(BOOL on);
 
 static NSString *NTM_suiteName = @"com.ntm.notifymanager";
 
@@ -141,57 +133,9 @@ static void NTM_blankPreview(id request) {
     } @catch(NSException *e) {}
 }
 
-#pragma mark - 网络策略 (后台断网用, 与设置面板同源)
-// policy: 0=wifi+流量 1=断网 2=打开wifi 3=流量
-static void NTM_applyNetPolicy(NSString *appId, NSInteger policy) {
-    if (!appId.length) return;
-    // policy: 0=wifi+流量 1=断网 2=只wifi 3=只流量；系统侧 1=允许 0=禁止
-    long long cell = (policy == 0 || policy == 3) ? 1 : 0;
-    long long wifi = (policy == 0 || policy == 2) ? 1 : 0;
-    @try {
-        Class cls = NSClassFromString(@"PSAppDataUsagePolicyCache");
-        if (!cls) {
-            dlopen("/System/Library/PrivateFrameworks/SettingsCellular.framework/SettingsCellular", RTLD_NOW);
-            cls = NSClassFromString(@"PSAppDataUsagePolicyCache");
-        }
-        if (!cls) {
-            dlopen("/System/Library/PrivateFrameworks/Preferences.framework/Preferences", RTLD_NOW);
-            cls = NSClassFromString(@"PSAppDataUsagePolicyCache");
-        }
-        if (!cls) return;
-        id cache = ((id (*)(id, SEL))objc_msgSend)(cls, NSSelectorFromString(@"sharedInstance"));
-        if (!cache) return;
-
-        id pol = nil;
-        SEL selPoliciesFor = NSSelectorFromString(@"policiesFor:");
-        if ([cache respondsToSelector:selPoliciesFor]) {
-            pol = ((id (*)(id, SEL, id))objc_msgSend)(cache, selPoliciesFor, appId);
-        }
-        if (pol) {
-            SEL sCell = NSSelectorFromString(@"setCellular:");
-            SEL sWifi = NSSelectorFromString(@"setWifi:");
-            if ([pol respondsToSelector:sCell])
-                ((void (*)(id, SEL, long long))objc_msgSend)(pol, sCell, cell);
-            if ([pol respondsToSelector:sWifi])
-                ((void (*)(id, SEL, long long))objc_msgSend)(pol, sWifi, wifi);
-        } else {
-            Class polCls = NSClassFromString(@"CTDataUsagePolicies");
-            SEL initSel = NSSelectorFromString(@"init:withCellularPolicy:andWifiPolicy:");
-            if (polCls && [polCls instancesRespondToSelector:initSel]) {
-                id obj = ((id (*)(id, SEL))objc_msgSend)((id)polCls, NSSelectorFromString(@"alloc"));
-                pol = ((id (*)(id, SEL, id, long long, long long))objc_msgSend)(obj, initSel, appId, cell, wifi);
-            }
-        }
-        if (!pol) return;
-
-        SEL setPol = NSSelectorFromString(@"setPolicies:completion:");
-        if ([cache respondsToSelector:setPol]) {
-            void (^done)(void) = ^{};
-            ((void (*)(id, SEL, id, id))objc_msgSend)(cache, setPol, pol, done);
-        }
-    } @catch(NSException *e) {}
-}
-
+#pragma mark - 面板网络配置读取
+// policy: 0=wifi+流量 1=断网 2=打开wifi 3=流量（写入由设置面板在 Preferences 进程完成，
+//         该进程才有 CommCenter 的 data-allowed-write 权限；Tweak 进程写会被静默拒绝）
 static NSInteger NTM_netRead(NSString *appId) {
     id v = [NTM_prefs() objectForKey:[NSString stringWithFormat:@"NTM_net_%@", appId]];
     return v ? [v integerValue] : 0;
@@ -313,22 +257,13 @@ static void hook_requestAuth(id self, SEL _cmd, unsigned long long options, id h
     if (orig_requestAuth) orig_requestAuth(self, _cmd, options, handler);
 }
 
-#pragma mark - 切后台自动断网 (FBSceneManager)
-static NSString *NTM_bundleIdOf(id scene) {
-    if (!scene) return nil;
-    NSString *bid = nil;
-    @try { bid = [scene valueForKeyPath:@"identity.bundleIdentifier"]; } @catch(NSException *e) {}
-    if (!bid.length) { @try { bid = [scene valueForKeyPath:@"definition.clientProcessName"]; } @catch(NSException *e) {} }
-    if (!bid.length) { @try { bid = [scene valueForKeyPath:@"clientIdentity.bundleIdentifier"]; } @catch(NSException *e) {} }
-    if (!bid.length) { @try { bid = [scene valueForKeyPath:@"clientProcess.bundleIdentifier"]; } @catch(NSException *e) {} }
-    return bid.length ? bid : nil;
-}
+#pragma mark - 切后台自动断网 (App 进程内, 见文件底部 init 的通知注册)
 // 是否开启"切后台自动断网"
 static BOOL NTM_bgNetOn(NSString *appId) {
     return NTM_feat(appId, @"bgNet");
 }
 // 全局快路径：面板维护"是否有 App 开了后台断网"。
-// 缺省按"有"处理（兼容旧数据，避免误跳过导致功能失效）；只有明确为关时才跳过 KVC。
+// 缺省按"有"处理（兼容旧数据，避免误跳过导致功能失效）；只有明确为关时才跳过后续判断。
 static BOOL NTM_anyBgNet(void) {
     @synchronized(NTM_cache()) {
         NSNumber *c = NTM_cache()[@"_bgNetAny"];
@@ -340,22 +275,15 @@ static BOOL NTM_anyBgNet(void) {
     return any;
 }
 
-static void (*orig_bg)(id, SEL, id);
-static void hook_bg(id self, SEL _cmd, id scene) {
-    if (orig_bg) orig_bg(self, _cmd, scene);
-    if (!NTM_anyBgNet()) return; // 没开任何后台断网 → 跳过 KVC
-    NSString *bid = NTM_bundleIdOf(scene);
-    if (bid.length && NTM_bgNetOn(bid)) NTM_applyNetPolicy(bid, 1); // 断网
+// 进后台：开了后台断网的 App 关掉已建立的远端连接并拒绝新建连接
+static void NTM_onEnterBackground(void) {
+    if (!NTM_anyBgNet()) return; // 没开任何后台断网 → 直接跳过
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+    if (bid.length && NTM_bgNetOn(bid)) NG_setBgBlocked(YES);
 }
-static void (*orig_fg)(id, SEL, id);
-static void hook_fg(id self, SEL _cmd, id scene) {
-    // 先恢复网络策略再调用原函数：系统在 orig_fg 内部会评估要不要弹「允许使用无线数据」，
-    // 如果策略还停留在"后台断网"状态，拦截 hook 又没拦住就会弹窗。
-    if (NTM_anyBgNet()) {
-        NSString *bid = NTM_bundleIdOf(scene);
-        if (bid.length && NTM_bgNetOn(bid)) NTM_applyNetPolicy(bid, NTM_netRead(bid)); // 恢复保存的网络策略
-    }
-    if (orig_fg) orig_fg(self, _cmd, scene);
+// 回前台：恢复放行；面板里显式设为「断网」的由 NetGuard 的 g_blocked 继续拦
+static void NTM_onEnterForeground(void) {
+    NG_setBgBlocked(NO);
 }
 
 #pragma mark - 屏蔽「允许"XX"使用无线数据」启动弹窗
@@ -556,12 +484,17 @@ __attribute__((constructor)) static void init() {
                 sel_registerName("insertNotificationRequest:forCoalescedNotification:"),
                 (IMP)hook_insertRequestCoalesced, (IMP *)&orig_insertRequestCoalesced);
 
-        // 切后台自动断网
-        Class fbm = objc_getClass("FBSceneManager");
-        tryHook(fbm, sel_registerName("_noteSceneMovedToBackground:"),
-                (IMP)hook_bg, (IMP *)&orig_bg);
-        tryHook(fbm, sel_registerName("_noteSceneMovedToForeground:"),
-                (IMP)hook_fg, (IMP *)&orig_fg);
+        // 切后台自动断网：在 App 自己进程里监听前后台（iOS 16 的 FBSceneManager 已无
+        // _noteSceneMovedTo*，旧 hook 会静默失败；SpringBoard 也没有 data-allowed-write
+        // 权限写不了系统数据策略，所以走 NetGuard 进程内拦截）
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:UIApplicationDidEnterBackgroundNotification
+                        object:nil queue:nil
+                    usingBlock:^(NSNotification *note) { NTM_onEnterBackground(); }];
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:UIApplicationWillEnterForegroundNotification
+                        object:nil queue:nil
+                    usingBlock:^(NSNotification *note) { NTM_onEnterForeground(); }];
 
         // 自动授权通知权限（注入 App 进程，需 Tweak.plist 含 Classes=UNUserNotificationCenter）
         tryHook(objc_getClass("UNUserNotificationCenter"),

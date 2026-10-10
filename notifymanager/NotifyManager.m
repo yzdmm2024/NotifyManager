@@ -1,4 +1,4 @@
-﻿// NotifyManager.m — 通知管理设置面板（自定义现代 UI）
+// NotifyManager.m — 通知管理设置面板（自定义现代 UI）
 // 枚举已安装 App，按分类(用户/巨魔/系统)展示
 // 每个 App：总开关 + 锁定屏幕/通知中心/横幅/声音/标记 子开关 + 单应用重置
 // 增强功能：仅隐藏角标 / 隐藏预览 / 后台自动断网 / 关键词过滤 / 分组
@@ -64,6 +64,7 @@ static BOOL NTM_feat(NSString *appId, NSString *key) {
 }
 // 维护"是否有 App 开了后台断网"的全局标记，供 Tweak 快速跳过场景 KVC（省电）。
 // 需在每次 bgNet 可能变化后调用。
+static void NTM_postConfigChanged(void); // 定义见下
 static void NTM_updateAnyBgNet(void) {
     BOOL any = NO;
     for (NSDictionary *app in NTM_allApps()) {
@@ -71,6 +72,7 @@ static void NTM_updateAnyBgNet(void) {
     }
     [NTM_prefs() setBool:any forKey:@"NTM_anyBgNet"];
     [NTM_prefs() synchronize];
+    NTM_postConfigChanged(); // 通知 SpringBoard 重写配置镜像（App 沙盒读不到 suite）
 }
 static void NTM_postConfigChanged(void) {
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
@@ -109,6 +111,7 @@ static NSInteger NTM_netRead(NSString *appId) {
 static void NTM_netWrite(NSString *appId, NSInteger policy) {
     [NTM_prefs() setInteger:policy forKey:NTM_netKey(appId)];
     [NTM_prefs() synchronize];
+    NTM_postConfigChanged(); // App 进程要靠它刷新「断网」拦截 + 配置镜像（此前漏发）
 }
 static NSArray *NTM_netOptions(void) {
     return @[

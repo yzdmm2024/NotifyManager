@@ -8,6 +8,8 @@
 // 后台断网: App 进程内监听 UIApplication 前后台通知 → NetGuard 关闭/拒绝本进程的远端连接
 //          （iOS 16 的 FBSceneManager 已无 _noteSceneMovedTo*，旧 hook 静默失败；
 //            SpringBoard 进程也缺 data-allowed-write 权限，写不了系统数据策略）
+// 配置镜像: 第三方 App 沙盒读不到面板 suite（cfprefsd 隔离），SpringBoard 转写到
+//          各 App 容器 Library/ntm_config.plist，App 端镜像优先读取（2.3.23）
 // 设置面板通过 NSUserDefaults suiteName 通信
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -16,8 +18,9 @@
 #import <dlfcn.h>
 #import <mach/mach.h>
 
-// NetGuard.m（同一 dylib）：后台断网的进程内拦截开关
+// NetGuard.m（同一 dylib）：后台断网的进程内拦截开关 + 面板「断网」状态刷新
 extern void NG_setBgBlocked(BOOL on);
+extern void NG_refresh(void);
 
 static NSString *NTM_suiteName = @"com.ntm.notifymanager";
 
@@ -41,12 +44,79 @@ static NSMutableDictionary *NTM_cache(void) {
     return cache;
 }
 
+// ===== 配置镜像（2.3.23）=====
+// 实测：第三方 App 沙盒完全读不到面板 suite 的持久化配置（cfprefsd 隔离，
+// NSUserDefaults / CFPreferences / 直读 plist 三条路全失败），而 SpringBoard 不受限。
+// 方案：SpringBoard 把配置按 bundle id 转写到各 App 容器 Library/ntm_config.plist
+// （见文件底部 NTM_writeMirrors），写完广播 mirrorUpdated；App 端读配置时
+// 镜像优先、suite 兜底（SpringBoard 不读镜像，直接走 suite）。
+static NSDictionary *g_mirror = nil;
+static BOOL g_mirrorLoaded = NO;
+
+// 进程判定缓存：构造期 mainBundle 偶发未就绪，取不到 bundle id 时不缓存、下次再判
+static BOOL NTM_isSpringBoard(void) {
+    @synchronized (NTM_cache()) {
+        static NSNumber *cached = nil;
+        if (!cached) {
+            NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
+            if (bid.length) cached = @([bid isEqualToString:@"com.apple.springboard"]);
+        }
+        return cached.boolValue;
+    }
+}
+
+// 本进程容器里的配置镜像（懒加载，收到 mirrorUpdated 后重读）
+static NSDictionary *NTM_mirror(void) {
+    @synchronized (NTM_cache()) {
+        if (!g_mirrorLoaded) {
+            g_mirrorLoaded = YES;
+            NSDictionary *d = nil;
+            if (!NTM_isSpringBoard()) {
+                NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/ntm_config.plist"];
+                d = [NSDictionary dictionaryWithContentsOfFile:path];
+            }
+            g_mirror = d ?: @{};
+        }
+        return g_mirror;
+    }
+}
+
+// 重读镜像 + 清配置缓存（收到 mirrorUpdated，或前后台决策点防挂起期间错过通知）
+static void NTM_mirrorInvalidate(void) {
+    @synchronized (NTM_cache()) {
+        g_mirror = nil;
+        g_mirrorLoaded = NO;
+        [NTM_cache() removeAllObjects];
+    }
+}
+
+// 面板改配置 → SpringBoard 重写完各 App 容器后广播此通知
+static void NTM_mirrorUpdatedCb(CFNotificationCenterRef center, void *observer,
+                                CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    NTM_mirrorInvalidate();
+    NG_refresh(); // 同一 dylib 的 NetGuard：刷新面板「断网」的 g_blocked
+}
+
+static void NTM_scheduleMirror(void); // 定义见文件底部（仅 SpringBoard 执行）
+
 // 设置面板写配置后发 Darwin 通知，这里清空缓存保证读取到最新值
 static void NTM_cacheInvalidated(CFNotificationCenterRef center, void *observer,
                                  CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     @synchronized(NTM_cache()) {
         [NTM_cache() removeAllObjects];
     }
+    NTM_scheduleMirror(); // SpringBoard：把最新配置转写进各 App 容器（其他进程空转）
+}
+
+// 配置读取入口：镜像优先（App 沙盒内唯一可信来源），再回退本进程 suite。
+// 同一 dylib 的 NetGuard.m 也用它读 NTM_net_<bundleId>。
+id NTM_prefObject(NSString *key) {
+    if (!key.length) return nil;
+    if (!NTM_isSpringBoard()) {
+        id m = NTM_mirror()[key];
+        if (m) return m;
+    }
+    return [NTM_prefs() objectForKey:key];
 }
 
 static BOOL NTM_raw(NSString *appId, NSString *key, BOOL def) {
@@ -55,7 +125,7 @@ static BOOL NTM_raw(NSString *appId, NSString *key, BOOL def) {
     @synchronized(NTM_cache()) {
         NSNumber *cached = NTM_cache()[k];
         if (cached) return [cached boolValue];
-        id val = [NTM_prefs() objectForKey:k];
+        id val = NTM_prefObject(k);
         BOOL v = val ? [val boolValue] : def;
         NTM_cache()[k] = @(v);
         return v;
@@ -137,7 +207,7 @@ static void NTM_blankPreview(id request) {
 // policy: 0=wifi+流量 1=断网 2=打开wifi 3=流量（写入由设置面板在 Preferences 进程完成，
 //         该进程才有 CommCenter 的 data-allowed-write 权限；Tweak 进程写会被静默拒绝）
 static NSInteger NTM_netRead(NSString *appId) {
-    id v = [NTM_prefs() objectForKey:[NSString stringWithFormat:@"NTM_net_%@", appId]];
+    id v = NTM_prefObject([NSString stringWithFormat:@"NTM_net_%@", appId]);
     return v ? [v integerValue] : 0;
 }
 
@@ -213,7 +283,7 @@ static BOOL hook_insertRequestCoalesced(id self, SEL _cmd, id request, id coales
 static BOOL NTM_autoAuthOn(void) {
     // 默认开启：装上即免弹窗，符合“抹除设置后打开 App 就不出现授权框”的使用预期。
     // 用户仍可在面板里手动关闭（关闭后恢复系统原生弹窗）。
-    id v = [NTM_prefs() objectForKey:@"NTM_autoAuth"];
+    id v = NTM_prefObject(@"NTM_autoAuth");
     return v ? [v boolValue] : YES;
 }
 
@@ -269,7 +339,7 @@ static BOOL NTM_anyBgNet(void) {
         NSNumber *c = NTM_cache()[@"_bgNetAny"];
         if (c) return [c boolValue];
     }
-    id v = [NTM_prefs() objectForKey:@"NTM_anyBgNet"];
+    id v = NTM_prefObject(@"NTM_anyBgNet");
     BOOL any = (v == nil) ? YES : [v boolValue];
     @synchronized(NTM_cache()) { NTM_cache()[@"_bgNetAny"] = @(any); }
     return any;
@@ -277,12 +347,15 @@ static BOOL NTM_anyBgNet(void) {
 
 // 进后台：开了后台断网的 App 关掉已建立的远端连接并拒绝新建连接
 static void NTM_onEnterBackground(void) {
+    NTM_mirrorInvalidate(); // App 可能挂起期间错过 mirrorUpdated，决策点强制重读最新配置
     if (!NTM_anyBgNet()) return; // 没开任何后台断网 → 直接跳过
     NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
     if (bid.length && NTM_bgNetOn(bid)) NG_setBgBlocked(YES);
 }
 // 回前台：恢复放行；面板里显式设为「断网」的由 NetGuard 的 g_blocked 继续拦
 static void NTM_onEnterForeground(void) {
+    NTM_mirrorInvalidate(); // 同上：覆盖挂起期间错过的配置/镜像更新
+    NG_refresh();
     NG_setBgBlocked(NO);
 }
 
@@ -444,6 +517,85 @@ static void tryHookMeta(Class cls, SEL sel, IMP hook, IMP *orig) {
     method_setImplementation(m, hook);
 }
 
+#pragma mark - 镜像写入：SpringBoard → 各 App 容器（仅 SpringBoard 进程执行）
+static dispatch_queue_t NTM_mirrorQueue(void) {
+    static dispatch_queue_t q = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ q = dispatch_queue_create("com.ntm.mirror", DISPATCH_QUEUE_SERIAL); });
+    return q;
+}
+static BOOL g_mirrorPending = NO;
+
+// 把面板 suite 的配置按 bundle id 分发，写入各 App 容器 Library/ntm_config.plist，
+// 写完广播 mirrorUpdated 让运行中的 App 重读。取不到容器（未启动过的 App 等）跳过，
+// 这类 App 进程本来也读不到配置，行为与旧版一致。
+static void NTM_writeMirrors(void) {
+    if (!NTM_isSpringBoard()) return;
+    @autoreleasepool {
+        // 每次新建 suite 实例并 synchronize：强制从 cfprefsd 拉面板最新写入，
+        // 避免复用单例的客户端缓存读到旧值
+        NSUserDefaults *fresh = [[NSUserDefaults alloc] initWithSuiteName:NTM_suiteName];
+        [fresh synchronize];
+        NSDictionary *domain = [fresh persistentDomainForName:NTM_suiteName];
+        NSDictionary *cfg = [domain isKindOfClass:[NSDictionary class]] ? domain : @{};
+        NSFileManager *fm = [NSFileManager defaultManager];
+        @try {
+            Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
+            SEL selWS = NSSelectorFromString(@"defaultWorkspace");
+            if (!wsCls || ![wsCls respondsToSelector:selWS]) return;
+            id ws = ((id (*)(id, SEL))objc_msgSend)(wsCls, selWS);
+            SEL selAll = NSSelectorFromString(@"allInstalledApplications");
+            if (!ws || ![ws respondsToSelector:selAll]) return;
+            id arr = ((id (*)(id, SEL))objc_msgSend)(ws, selAll);
+            if (!arr) return;
+            for (id proxy in arr) {
+                @try {
+                    NSString *bid = nil;
+                    SEL sBid = NSSelectorFromString(@"applicationIdentifier");
+                    if ([proxy respondsToSelector:sBid])
+                        bid = ((id (*)(id, SEL))objc_msgSend)(proxy, sBid);
+                    if (!bid.length) continue;
+                    SEL sCtr = NSSelectorFromString(@"dataContainerURL");
+                    if (![proxy respondsToSelector:sCtr]) continue;
+                    NSURL *u = ((id (*)(id, SEL))objc_msgSend)(proxy, sCtr);
+                    NSString *root = u.path;
+                    if (!root.length || ![fm fileExistsAtPath:root]) continue;
+                    // 该 App 的所有 NTM_<dim>_<bid> 配置 + 全局项（后台断网/自动授权）
+                    NSString *suffix = [@"_" stringByAppendingString:bid];
+                    NSMutableDictionary *d = [NSMutableDictionary dictionaryWithCapacity:8];
+                    id v = cfg[@"NTM_anyBgNet"]; if (v) d[@"NTM_anyBgNet"] = v;
+                    v = cfg[@"NTM_autoAuth"];    if (v) d[@"NTM_autoAuth"] = v;
+                    for (NSString *k in cfg) {
+                        if ([k hasPrefix:@"NTM_"] && [k hasSuffix:suffix]) d[k] = cfg[k];
+                    }
+                    NSString *dir = [root stringByAppendingPathComponent:@"Library"];
+                    if (![fm fileExistsAtPath:dir])
+                        [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+                    [d writeToFile:[dir stringByAppendingPathComponent:@"ntm_config.plist"] atomically:YES];
+                } @catch (NSException *e) {}
+            }
+        } @catch (NSException *e) {}
+        // 通知所有运行中的 App：镜像已更新，重读并清缓存
+        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                             CFSTR("com.ntm.notifymanager.mirrorUpdated"),
+                                             NULL, NULL, YES);
+    }
+}
+
+// 防抖：面板批量开关会连发 configChanged，攒 0.3s 写一次（串行队列，避免并发写）
+static void NTM_scheduleMirror(void) {
+    if (!NTM_isSpringBoard()) return;
+    @synchronized (NTM_cache()) {
+        if (g_mirrorPending) return;
+        g_mirrorPending = YES;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                   NTM_mirrorQueue(), ^{
+        @synchronized (NTM_cache()) { g_mirrorPending = NO; } // 写的过程中再有变更会重新排程
+        NTM_writeMirrors();
+    });
+}
+
 __attribute__((constructor)) static void init() {
     @autoreleasepool {
         // 监听设置面板的配置变更通知，清空内存缓存
@@ -451,6 +603,17 @@ __attribute__((constructor)) static void init() {
                                         NULL, NTM_cacheInvalidated,
                                         CFSTR("com.ntm.notifymanager.configChanged"),
                                         NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+
+        // SpringBoard 写完各 App 容器的配置镜像后广播 → 本进程（App 内）重读镜像并刷新 NetGuard
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                        NULL, NTM_mirrorUpdatedCb,
+                                        CFSTR("com.ntm.notifymanager.mirrorUpdated"),
+                                        NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+
+        // SpringBoard 开机全量补写一次镜像（升级后没有配置变更也要生效）。
+        // 延后 10s 避开启动高峰；NTM_writeMirrors 内部自判进程，非 SpringBoard 空转返回。
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC)),
+                       NTM_mirrorQueue(), ^{ NTM_writeMirrors(); });
 
         // 自动授权通知默认开启：保证重装/抹除后打开 App 不再弹授权框（面板可手动关）
         [NTM_prefs() registerDefaults:@{@"NTM_autoAuth": @YES}];

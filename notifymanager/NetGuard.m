@@ -25,22 +25,17 @@
 #import <arpa/inet.h>
 #import <unistd.h>
 
-static NSString *const kNGSuite   = @"com.ntm.notifymanager";
 static NSString *const kNGChanged = @"com.ntm.notifymanager.configChanged";
+
+// Tweak.m（同一 dylib）：镜像优先 → 本进程 suite 的配置读取。
+// 第三方 App 沙盒读不到面板 suite，SpringBoard 会把配置转写进各 App 容器的
+// ntm_config.plist，由 NTM_prefObject 统一做「镜像优先、suite 兜底」。
+extern id NTM_prefObject(NSString *key);
 
 // policy: 0=wifi+流量 1=断网 2=只wifi 3=只流量（与设置面板一致）
 static const NSInteger kNGPolicyBlocked = 1;
 
 #pragma mark - 本进程身份与配置
-
-static NSUserDefaults *NG_prefs(void) {
-    static NSUserDefaults *prefs = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        prefs = [[NSUserDefaults alloc] initWithSuiteName:kNGSuite];
-    });
-    return prefs;
-}
 
 static NSString *NG_bundleId(void) {
     NSString *bid = nil;
@@ -54,7 +49,7 @@ static volatile BOOL g_resolved = NO;
 // 后台断网置位：App 切后台时由 Tweak.m 的前后台回调经 NG_setBgBlocked() 置位
 static volatile BOOL g_bgBlocked = NO;
 
-static void NG_refresh(void) {
+void NG_refresh(void) {
     // 先置位：万一 NSUserDefaults 内部再触发被 hook 的函数，也不会递归
     g_resolved = YES;
 
@@ -62,7 +57,7 @@ static void NG_refresh(void) {
     BOOL blocked = NO;
     if (bid.length) {
         @try {
-            id v = [NG_prefs() objectForKey:[NSString stringWithFormat:@"NTM_net_%@", bid]];
+            id v = NTM_prefObject([NSString stringWithFormat:@"NTM_net_%@", bid]);
             blocked = (v != nil) && ([v integerValue] == kNGPolicyBlocked);
         } @catch (NSException *e) {}
     }
